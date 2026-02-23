@@ -1512,6 +1512,9 @@ fn start_ssh_session_in_tui(terminal: &mut Terminal<CrosstermBackend<io::Stdout>
             thread::sleep(Duration::from_secs(3));
 
             if let Ok(sess) = sess_stats.lock() {
+                // Temporarily enable blocking mode for stats collection
+                sess.set_blocking(true);
+
                 if let Ok(mut ch) = sess.channel_session() {
                     let batch_cmd = concat!(
                         "echo '===CPU==='; ",
@@ -1542,6 +1545,9 @@ fn start_ssh_session_in_tui(terminal: &mut Terminal<CrosstermBackend<io::Stdout>
 
                     parse_batch_stats(&output, &session_info_stats);
                 }
+
+                // Restore non-blocking mode for the main SSH channel
+                sess.set_blocking(false);
             }
         }
     });
