@@ -50,7 +50,9 @@ cargo run
 - `:u` → `uptime`
 - `:d` → `docker ps`
 - `:dc` → `docker compose up -d`
-- `:q` → `exit`
+- `:exit` → `exit`
+
+Not: htop, vim, nano gibi interaktif uygulamalarda `:` makroları çalışmaz. Bu uygulamalardan çıkmak için kendi çıkış tuşlarını kullanın (htop için `q`, vim için `:q`).
 
 ## API Senkronizasyonu
 

@@ -79,7 +79,7 @@ lazy_static::lazy_static! {
         m.insert(":u", "uptime");
         m.insert(":d", "docker ps");
         m.insert(":dc", "docker compose up -d");
-        m.insert(":q", "exit");
+        m.insert(":exit", "exit");
         m
     };
 }
@@ -90,16 +90,11 @@ struct Texts {
     new_server: &'static str,
     edit_server: &'static str,
     api_key_settings: &'static str,
-    open_ports: &'static str,
     command_history: &'static str,
-    network_info: &'static str,
     system_monitor: &'static str,
-    remote_system: &'static str,
     connection: &'static str,
     waiting: &'static str,
     no_commands: &'static str,
-    no_ports: &'static str,
-    no_network: &'static str,
     quick_commands: &'static str,
     search_placeholder: &'static str,
     info: &'static str,
@@ -112,20 +107,15 @@ impl Texts {
         match lang {
             Language::Turkish => Texts {
                 title: " SSH Sunucularim",
-                help: " Sec: ↑↓ | Baglan: Enter | Yeni: n | Duzenle: e | Sil: d | Ara: / | Ping: p | API: s | Dil: l | Tab | q",
+                help: " Sec: ↑↓ | Baglan: Enter | Yeni: n | Duzenle: e | Sil: d | Ara: / | Ping: p | API: s | Dil: l | q",
                 new_server: " Yeni Sunucu Ekle ",
                 edit_server: " Sunucu Duzenle ",
                 api_key_settings: " API Key Ayarlari ",
-                open_ports: "Portlar",
                 command_history: "Komutlar",
-                network_info: "Ag",
                 system_monitor: " Sistem Monitoru ",
-                remote_system: " Uzak Sistem ",
                 connection: " Baglanti ",
                 waiting: "Baglanti bekleniyor...",
                 no_commands: "Henuz komut yok",
-                no_ports: "Port bulunamadi",
-                no_network: "Ag bilgisi yok",
                 quick_commands: " Hizli Komutlar ",
                 search_placeholder: "Ara: ",
                 info: " Bilgi ",
@@ -134,20 +124,15 @@ impl Texts {
             },
             Language::English => Texts {
                 title: " My SSH Servers",
-                help: " Sel: ↑↓ | Connect: Enter | New: n | Edit: e | Del: d | Search: / | Ping: p | API: s | Lang: l | Tab | q",
+                help: " Sel: ↑↓ | Connect: Enter | New: n | Edit: e | Del: d | Search: / | Ping: p | API: s | Lang: l | q",
                 new_server: " Add New Server ",
                 edit_server: " Edit Server ",
                 api_key_settings: " API Key Settings ",
-                open_ports: "Ports",
                 command_history: "History",
-                network_info: "Net",
                 system_monitor: " System Monitor ",
-                remote_system: " Remote System ",
                 connection: " Connection ",
                 waiting: "Waiting for connection...",
                 no_commands: "No commands yet",
-                no_ports: "No ports found",
-                no_network: "No network info",
                 quick_commands: " Quick Commands ",
                 search_placeholder: "Search: ",
                 info: " Info ",
@@ -175,31 +160,11 @@ enum EditField {
     ApiKey,
 }
 
-#[derive(PartialEq, Clone, Copy)]
-enum SidebarTab {
-    OpenPorts,
-    CommandHistory,
-    NetworkInfo,
-}
-
 #[derive(Clone)]
 struct SessionInfo {
     username: String,
     hostname: String,
-    current_path: String,
-    cpu_usage: f32,
-    memory_usage: f32,
-    memory_used_mb: u64,
-    memory_total_mb: u64,
-    disk_usage_percent: f32,
-    disk_used_gb: f64,
-    disk_total_gb: f64,
-    load_average: String,
-    uptime: String,
-    os_info: String,
-    open_ports: Vec<String>,
     command_history: Vec<String>,
-    network_interfaces: Vec<String>,
 }
 
 impl Default for SessionInfo {
@@ -207,20 +172,7 @@ impl Default for SessionInfo {
         Self {
             username: String::new(),
             hostname: String::new(),
-            current_path: String::new(),
-            cpu_usage: 0.0,
-            memory_usage: 0.0,
-            memory_used_mb: 0,
-            memory_total_mb: 0,
-            disk_usage_percent: 0.0,
-            disk_used_gb: 0.0,
-            disk_total_gb: 0.0,
-            load_average: String::new(),
-            uptime: String::new(),
-            os_info: String::new(),
-            open_ports: Vec::new(),
             command_history: Vec::new(),
-            network_interfaces: Vec::new(),
         }
     }
 }
@@ -253,12 +205,11 @@ struct App {
     input_username: String,
     input_password: String,
     // API config
-    api_url: Option<String>,
+    api_url: String,
     input_api_key: String,
     // Error display
     error_message: Option<String>,
     // Sidebar
-    sidebar_tab: SidebarTab,
     session_info: Option<SessionInfo>,
     // Local system info
     local_system_info: Arc<Mutex<LocalSystemInfo>>,
@@ -271,7 +222,7 @@ struct App {
 }
 
 impl App {
-    fn new(config: AppConfig, api_url: Option<String>, local_info: Arc<Mutex<LocalSystemInfo>>) -> App {
+    fn new(config: AppConfig, api_url: String, local_info: Arc<Mutex<LocalSystemInfo>>) -> App {
         let mut state = ListState::default();
         if !config.hosts.is_empty() {
             state.select(Some(0));
@@ -291,7 +242,6 @@ impl App {
             api_url,
             input_api_key,
             error_message: None,
-            sidebar_tab: SidebarTab::CommandHistory,
             session_info: None,
             local_system_info: local_info,
             search_mode: false,
@@ -405,82 +355,6 @@ fn format_uptime(secs: u64) -> String {
     }
 }
 
-fn parse_batch_stats(output: &str, session_info: &Arc<Mutex<Option<SessionInfo>>>) {
-    let markers = [
-        "===CPU===", "===MEM===", "===DISK===", "===PWD===",
-        "===PORTS===", "===LOAD===", "===UPTIME===", "===OS===",
-        "===NET===", "===END===",
-    ];
-
-    let mut sections: HashMap<&str, &str> = HashMap::new();
-    for i in 0..markers.len() - 1 {
-        if let Some(start) = output.find(markers[i]) {
-            if let Some(end) = output.find(markers[i + 1]) {
-                let content = &output[start + markers[i].len()..end];
-                sections.insert(markers[i], content.trim());
-            }
-        }
-    }
-
-    if let Ok(mut info_opt) = session_info.lock() {
-        if let Some(ref mut info) = *info_opt {
-            if let Some(cpu_str) = sections.get("===CPU===") {
-                if let Ok(cpu) = cpu_str.trim().parse::<f32>() {
-                    info.cpu_usage = cpu;
-                }
-            }
-            if let Some(mem_str) = sections.get("===MEM===") {
-                let parts: Vec<&str> = mem_str.split_whitespace().collect();
-                if parts.len() == 2 {
-                    let used: u64 = parts[0].parse().unwrap_or(0);
-                    let total: u64 = parts[1].parse().unwrap_or(1);
-                    info.memory_used_mb = used / 1024 / 1024;
-                    info.memory_total_mb = total / 1024 / 1024;
-                    if total > 0 {
-                        info.memory_usage = (used as f64 / total as f64 * 100.0) as f32;
-                    }
-                }
-            }
-            if let Some(disk_str) = sections.get("===DISK===") {
-                let parts: Vec<&str> = disk_str.split_whitespace().collect();
-                if parts.len() == 2 {
-                    let used: u64 = parts[0].parse().unwrap_or(0);
-                    let total: u64 = parts[1].parse().unwrap_or(1);
-                    info.disk_used_gb = used as f64 / 1024.0 / 1024.0 / 1024.0;
-                    info.disk_total_gb = total as f64 / 1024.0 / 1024.0 / 1024.0;
-                    if total > 0 {
-                        info.disk_usage_percent = (used as f64 / total as f64 * 100.0) as f32;
-                    }
-                }
-            }
-            if let Some(pwd_str) = sections.get("===PWD===") {
-                info.current_path = pwd_str.trim().to_string();
-            }
-            if let Some(ports_str) = sections.get("===PORTS===") {
-                info.open_ports = ports_str.lines()
-                    .filter(|l| !l.is_empty())
-                    .map(|s| s.to_string())
-                    .collect();
-            }
-            if let Some(load_str) = sections.get("===LOAD===") {
-                info.load_average = load_str.trim().to_string();
-            }
-            if let Some(uptime_str) = sections.get("===UPTIME===") {
-                info.uptime = uptime_str.trim().to_string();
-            }
-            if let Some(os_str) = sections.get("===OS===") {
-                info.os_info = os_str.trim().to_string();
-            }
-            if let Some(net_str) = sections.get("===NET===") {
-                info.network_interfaces = net_str.lines()
-                    .filter(|l| !l.is_empty())
-                    .map(|s| s.to_string())
-                    .collect();
-            }
-        }
-    }
-}
-
 // --- API FONKSİYONLARI ---
 
 fn fetch_from_api(api_url: &str, api_key: &str) -> Result<Vec<Host>> {
@@ -581,10 +455,10 @@ fn main() {
 fn main_loop() -> Result<()> {
     let mut config = load_config().unwrap_or_default();
 
-    let api_url = env::var("API_URL").ok();
+    let api_url = env::var("API_URL").unwrap_or_else(|_| "https://termissh.org".to_string());
 
-    if let (Some(url), Some(key)) = (&api_url, &config.api_key) {
-        match fetch_from_api(url, key) {
+    if let Some(key) = &config.api_key.clone() {
+        match fetch_from_api(&api_url, key) {
             Ok(hosts) => config.hosts = hosts,
             Err(_) => {}
         }
@@ -739,13 +613,6 @@ fn run_app(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>, app: &mut App)
                         KeyCode::Char('q') => return Ok(()),
                         KeyCode::Down => app.next(),
                         KeyCode::Up => app.previous(),
-                        KeyCode::Tab => {
-                            app.sidebar_tab = match app.sidebar_tab {
-                                SidebarTab::OpenPorts => SidebarTab::CommandHistory,
-                                SidebarTab::CommandHistory => SidebarTab::NetworkInfo,
-                                SidebarTab::NetworkInfo => SidebarTab::OpenPorts,
-                            };
-                        },
                         KeyCode::Char('l') => {
                             app.config.language = match app.config.language {
                                 Language::Turkish => Language::English,
@@ -822,9 +689,9 @@ fn run_app(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>, app: &mut App)
                         KeyCode::Char('d') => {
                             if let Some(selected) = app.state.selected() {
                                 if selected < app.config.hosts.len() {
-                                    if let (Some(url), Some(key)) = (&app.api_url, &app.config.api_key) {
+                                    if let Some(key) = &app.config.api_key.clone() {
                                         if let Some(ref id) = app.config.hosts[selected].id.clone() {
-                                            if let Err(e) = delete_on_api(url, key, id) {
+                                            if let Err(e) = delete_on_api(&app.api_url, key, id) {
                                                 app.error_message = Some(format!("API delete error: {}", e));
                                             }
                                         }
@@ -849,10 +716,24 @@ fn run_app(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>, app: &mut App)
                                 if selected < app.config.hosts.len() {
                                     let host = app.config.hosts[selected].clone();
 
-                                    if let Err(e) = start_ssh_session_in_tui(terminal, app, &host) {
-                                        app.error_message = Some(format!("SSH Error: {}", e));
+                                    // TUI'dan çık ve normal terminal moduna geç
+                                    disable_raw_mode()?;
+                                    execute!(terminal.backend_mut(), LeaveAlternateScreen)?;
+                                    terminal.show_cursor()?;
+
+                                    println!("\nConnecting to {}@{}:{}...\n", host.username, host.hostname, host.port);
+
+                                    if let Err(e) = start_ssh_session_interactive(&host) {
+                                        eprintln!("\nSSH Error: {}", e);
+                                        println!("\nPress Enter to return to menu...");
+                                        let mut s = String::new();
+                                        io::stdin().read_line(&mut s)?;
                                     }
 
+                                    // TUI'ya geri dön
+                                    enable_raw_mode()?;
+                                    execute!(terminal.backend_mut(), EnterAlternateScreen)?;
+                                    terminal.hide_cursor()?;
                                     terminal.clear()?;
                                 }
                             }
@@ -889,8 +770,8 @@ fn run_app(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>, app: &mut App)
                                         password,
                                     };
 
-                                    if let (Some(url), Some(key)) = (&app.api_url, &app.config.api_key) {
-                                        if let Err(e) = update_on_api(url, key, &updated_host) {
+                                    if let Some(key) = &app.config.api_key.clone() {
+                                        if let Err(e) = update_on_api(&app.api_url, key, &updated_host) {
                                             app.error_message = Some(format!("API update error: {}", e));
                                         }
                                     }
@@ -907,8 +788,8 @@ fn run_app(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>, app: &mut App)
                                         password,
                                     };
 
-                                    if let (Some(url), Some(key)) = (&app.api_url, &app.config.api_key) {
-                                        match create_on_api(url, key, &new_host) {
+                                    if let Some(key) = &app.config.api_key.clone() {
+                                        match create_on_api(&app.api_url, key, &new_host) {
                                             Ok(id) => new_host.id = Some(id),
                                             Err(e) => app.error_message = Some(format!("API create error: {}", e)),
                                         }
@@ -951,8 +832,8 @@ fn run_app(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>, app: &mut App)
                         app.config.api_key = if app.input_api_key.is_empty() { None } else { Some(app.input_api_key.clone()) };
                         let _ = app.save_config();
 
-                        if let (Some(url), Some(key)) = (&app.api_url, &app.config.api_key) {
-                            match fetch_from_api(url, key) {
+                        if let Some(key) = &app.config.api_key.clone() {
+                            match fetch_from_api(&app.api_url, key) {
                                 Ok(hosts) => {
                                     app.config.hosts = hosts;
                                     if app.config.hosts.is_empty() {
@@ -998,49 +879,41 @@ fn ui(f: &mut Frame, app: &mut App) {
     // Build list items with visible hosts
     let visible = app.visible_hosts();
     let items: Vec<ListItem> = visible.iter().map(|(i, host)| {
-        let api_span = if host.id.is_some() {
-            Span::styled(" * ", Style::default().fg(Color::Green).add_modifier(Modifier::BOLD))
+        let dot = if host.id.is_some() {
+            Span::styled(" ● ", Style::default().fg(Color::Green))
         } else {
-            Span::styled(" o ", Style::default().fg(Color::DarkGray))
+            Span::styled(" ○ ", Style::default().fg(Color::Rgb(70, 70, 80)))
         };
 
         let mut spans = vec![
-            api_span,
-            Span::styled(host.alias.clone(), Style::default().fg(Color::White).add_modifier(Modifier::BOLD)),
+            dot,
             Span::styled(
-                format!("  {}:{}", host.hostname, host.port),
-                Style::default().fg(Color::DarkGray),
+                format!("{:<18}", host.alias),
+                Style::default().fg(Color::White).add_modifier(Modifier::BOLD),
             ),
             Span::styled(
-                format!("  {}", host.username),
-                Style::default().fg(Color::Cyan),
+                format!("{}@{}:{}", host.username, host.hostname, host.port),
+                Style::default().fg(Color::Rgb(100, 110, 130)),
             ),
         ];
 
-        // Ping result
         if let Some(ping) = app.ping_results.get(i) {
-            match ping {
-                Some(ms) if *ms < 100 => spans.push(Span::styled(
-                    format!("  {}ms", ms), Style::default().fg(Color::Green)
-                )),
-                Some(ms) if *ms < 300 => spans.push(Span::styled(
-                    format!("  {}ms", ms), Style::default().fg(Color::Yellow)
-                )),
-                Some(ms) => spans.push(Span::styled(
-                    format!("  {}ms", ms), Style::default().fg(Color::Red)
-                )),
-                None => spans.push(Span::styled(
-                    "  timeout".to_string(), Style::default().fg(Color::Red)
-                )),
-            }
+            let (text, color) = match ping {
+                Some(ms) if *ms < 100 => (format!("  {}ms", ms), Color::Green),
+                Some(ms) if *ms < 300 => (format!("  {}ms", ms), Color::Yellow),
+                Some(ms)              => (format!("  {}ms", ms), Color::Red),
+                None                  => ("  timeout".to_string(), Color::Red),
+            };
+            spans.push(Span::styled(text, Style::default().fg(color)));
         }
 
         ListItem::new(Line::from(spans))
     }).collect();
 
-    let sync_status = match (&app.api_url, &app.config.api_key) {
-        (Some(_), Some(_)) => " [API: +]",
-        _ => " [API: -]",
+    let (sync_symbol, sync_color) = if app.config.api_key.is_some() {
+        (" ●", Color::Green)
+    } else {
+        (" ○", Color::Rgb(70, 70, 80))
     };
 
     let host_count = format!(" ({}) ", app.config.hosts.len());
@@ -1048,16 +921,19 @@ fn ui(f: &mut Frame, app: &mut App) {
     let list = List::new(items)
         .block(Block::default()
             .borders(Borders::ALL)
-            .title(format!("{}{}{}", texts.title, host_count, sync_status))
-            .title_style(Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD))
-            .border_style(Style::default().fg(Color::DarkGray)))
+            .title(Line::from(vec![
+                Span::styled(texts.title, Style::default().fg(Color::White).add_modifier(Modifier::BOLD)),
+                Span::styled(host_count, Style::default().fg(Color::Rgb(100, 100, 110))),
+                Span::styled(sync_symbol, Style::default().fg(sync_color)),
+            ]))
+            .border_style(Style::default().fg(Color::Rgb(50, 50, 65))))
         .highlight_style(
             Style::default()
-                .bg(Color::Rgb(30, 60, 120))
+                .bg(Color::Rgb(25, 40, 65))
                 .fg(Color::White)
                 .add_modifier(Modifier::BOLD)
         )
-        .highlight_symbol(" >> ");
+        .highlight_symbol("   ");
 
     f.render_stateful_widget(list, left_chunks[0], &mut app.state);
 
@@ -1076,42 +952,69 @@ fn ui(f: &mut Frame, app: &mut App) {
                 let p = Paragraph::new(search_text)
                     .block(Block::default().borders(Borders::ALL).border_style(Style::default().fg(Color::Yellow)));
                 f.render_widget(p, left_chunks[1]);
+            } else if let Some(ref err) = app.error_message {
+                let p = Paragraph::new(format!(" ✗ {}", err))
+                    .style(Style::default().fg(Color::Red))
+                    .block(Block::default().borders(Borders::ALL).border_style(Style::default().fg(Color::Red)));
+                f.render_widget(p, left_chunks[1]);
             } else {
-                let text = if let Some(ref err) = app.error_message {
-                    format!(" ERROR: {}", err)
-                } else {
-                    texts.help.to_string()
-                };
-                let style = if app.error_message.is_some() {
-                    Style::default().fg(Color::Red)
-                } else {
-                    Style::default().fg(Color::DarkGray)
-                };
-                let p = Paragraph::new(text).style(style);
+                let ks = Style::default().fg(Color::Cyan);
+                let ds = Style::default().fg(Color::Rgb(90, 90, 100));
+                let p = Paragraph::new(Line::from(vec![
+                    Span::raw(" "),
+                    Span::styled("[↑↓]", ks), Span::styled(" nav  ", ds),
+                    Span::styled("[↵]", ks),  Span::styled(" connect  ", ds),
+                    Span::styled("[n]", ks),  Span::styled(" new  ", ds),
+                    Span::styled("[e]", ks),  Span::styled(" edit  ", ds),
+                    Span::styled("[d]", ks),  Span::styled(" del  ", ds),
+                    Span::styled("[/]", ks),  Span::styled(" search  ", ds),
+                    Span::styled("[p]", ks),  Span::styled(" ping  ", ds),
+                    Span::styled("[s]", ks),  Span::styled(" api  ", ds),
+                    Span::styled("[l]", ks),  Span::styled(" lang  ", ds),
+                    Span::styled("[q]", ks),  Span::styled(" quit", ds),
+                ]));
                 f.render_widget(p, left_chunks[1]);
             }
         }
         InputMode::Editing => {
             let title = if app.editing_index.is_some() { texts.edit_server } else { texts.new_server };
 
-            let active_style = Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD);
-            let def_style = Style::default().fg(Color::DarkGray);
+            let active_style = Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD);
+            let def_style = Style::default().fg(Color::Rgb(80, 80, 90));
+            let val_style = Style::default().fg(Color::White);
             let get_style = |field: EditField| if app.edit_field == field { active_style } else { def_style };
 
-            let pwd_masked: String = app.input_password.chars().map(|_| '*').collect();
+            let pwd_masked: String = app.input_password.chars().map(|_| '•').collect();
+            let cursor = if true { Span::styled("_", Style::default().fg(Color::Cyan)) } else { Span::raw("") };
+            let _ = cursor;
 
-            let text = Line::from(vec![
-                Span::styled("Alias: ", get_style(EditField::Alias)), Span::raw(&app.input_alias), Span::raw(" | "),
-                Span::styled("Host: ", get_style(EditField::Hostname)), Span::raw(&app.input_hostname), Span::raw(" | "),
-                Span::styled("Port: ", get_style(EditField::Port)), Span::raw(&app.input_port), Span::raw(" | "),
-                Span::styled("User: ", get_style(EditField::Username)), Span::raw(&app.input_username), Span::raw(" | "),
-                Span::styled("Pass: ", get_style(EditField::Password)), Span::raw(pwd_masked),
-            ]);
+            let mut spans = vec![
+                Span::raw(" "),
+                Span::styled("alias ", get_style(EditField::Alias)),
+                Span::styled(app.input_alias.clone(), val_style), Span::raw("  "),
+                Span::styled("host ", get_style(EditField::Hostname)),
+                Span::styled(app.input_hostname.clone(), val_style), Span::raw("  "),
+                Span::styled("port ", get_style(EditField::Port)),
+                Span::styled(app.input_port.clone(), val_style), Span::raw("  "),
+                Span::styled("user ", get_style(EditField::Username)),
+                Span::styled(app.input_username.clone(), val_style), Span::raw("  "),
+                Span::styled("pass ", get_style(EditField::Password)),
+                Span::styled(pwd_masked, val_style),
+            ];
+            // cursor on active field
+            if app.edit_field == EditField::Alias || app.edit_field == EditField::Hostname
+                || app.edit_field == EditField::Port || app.edit_field == EditField::Username
+                || app.edit_field == EditField::Password {
+                spans.push(Span::styled("▌", Style::default().fg(Color::Cyan)));
+            }
 
-            let p = Paragraph::new(text)
-                .style(Style::default().fg(Color::Green))
-                .block(Block::default().borders(Borders::ALL).title(title)
-                    .border_style(Style::default().fg(Color::Green)));
+            let p = Paragraph::new(Line::from(spans))
+                .block(Block::default().borders(Borders::ALL)
+                    .title(Line::from(vec![
+                        Span::styled(title, Style::default().fg(Color::Cyan)),
+                        Span::styled("  [Tab] next  [↵] save  [Esc] cancel", Style::default().fg(Color::Rgb(80,80,90))),
+                    ]))
+                    .border_style(Style::default().fg(Color::Cyan)));
             f.render_widget(p, left_chunks[1]);
         }
         InputMode::ApiKeySettings => {
@@ -1119,21 +1022,23 @@ fn ui(f: &mut Frame, app: &mut App) {
             let key_masked: String = if app.input_api_key.len() > 8 {
                 format!("{}...{}", &app.input_api_key[..4], &app.input_api_key[app.input_api_key.len()-4..])
             } else {
-                app.input_api_key.chars().map(|_| '*').collect()
+                app.input_api_key.chars().map(|_| '•').collect()
             };
 
-            let text = vec![
-                Line::from(vec![
-                    Span::styled("API Key: ", Style::default().fg(Color::Yellow)),
-                    Span::raw(key_masked),
-                ]),
-                Line::from(Span::styled(texts.save_hint, Style::default().fg(Color::DarkGray))),
-            ];
-
-            let p = Paragraph::new(text)
-                .style(Style::default().fg(Color::Green))
-                .block(Block::default().borders(Borders::ALL).title(texts.api_key_settings)
-                    .border_style(Style::default().fg(Color::Magenta)));
+            let p = Paragraph::new(Line::from(vec![
+                Span::raw(" "),
+                Span::styled("key ", Style::default().fg(Color::Cyan)),
+                Span::styled(key_masked, Style::default().fg(Color::White)),
+                Span::styled("▌  ", Style::default().fg(Color::Cyan)),
+                Span::styled("url ", Style::default().fg(Color::Rgb(80,80,90))),
+                Span::styled(app.api_url.clone(), Style::default().fg(Color::Rgb(100,100,120))),
+            ]))
+            .block(Block::default().borders(Borders::ALL)
+                .title(Line::from(vec![
+                    Span::styled(texts.api_key_settings, Style::default().fg(Color::Cyan)),
+                    Span::styled("  [↵] save & sync  [Esc] cancel", Style::default().fg(Color::Rgb(80,80,90))),
+                ]))
+                .border_style(Style::default().fg(Color::Cyan)));
             f.render_widget(p, left_chunks[1]);
         }
     }
@@ -1150,131 +1055,111 @@ fn render_sidebar(f: &mut Frame, app: &App, area: Rect) {
 }
 
 fn render_local_sidebar(f: &mut Frame, app: &App, area: Rect) {
-    let texts = Texts::get(app.config.language);
     let sidebar_chunks = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
-            Constraint::Length(9),  // System performance gauges
-            Constraint::Length(6),  // System info
-            Constraint::Min(4),    // Quick command hints
+            Constraint::Min(0),    // System + Info merged
+            Constraint::Length(6), // Quick commands compact
             Constraint::Length(3), // Status bar
         ])
         .split(area);
 
     let bar_width = area.width.saturating_sub(2);
+    let muted = Style::default().fg(Color::Rgb(80, 80, 95));
+    let label = Style::default().fg(Color::Rgb(120, 140, 170));
 
-    // System performance gauges
     if let Ok(info) = app.local_system_info.lock() {
-        let sys_lines = vec![
+        let lines = vec![
             Line::from(""),
             gauge_bar(" CPU ", info.cpu_usage, bar_width),
-            Line::from(Span::styled(
-                format!("       {} cores", info.cpu_count),
-                Style::default().fg(Color::DarkGray),
-            )),
             gauge_bar(" RAM ", info.memory_usage, bar_width),
             Line::from(Span::styled(
-                format!("       {} / {}", format_bytes_mb(info.memory_used_mb), format_bytes_mb(info.memory_total_mb)),
-                Style::default().fg(Color::DarkGray),
+                format!("      {} / {}", format_bytes_mb(info.memory_used_mb), format_bytes_mb(info.memory_total_mb)),
+                muted,
             )),
             gauge_bar(" DSK ", info.disk_usage_percent, bar_width),
             Line::from(Span::styled(
-                format!("       {:.1} / {:.1} GB", info.disk_used_gb, info.disk_total_gb),
-                Style::default().fg(Color::DarkGray),
+                format!("      {:.1} / {:.1} GB", info.disk_used_gb, info.disk_total_gb),
+                muted,
             )),
+            Line::from(""),
+            Line::from(vec![
+                Span::styled(" os    ", label),
+                Span::styled(info.os_name.clone(), Style::default().fg(Color::White)),
+            ]),
+            Line::from(vec![
+                Span::styled(" host  ", label),
+                Span::styled(info.hostname.clone(), Style::default().fg(Color::White)),
+            ]),
+            Line::from(vec![
+                Span::styled(" up    ", label),
+                Span::styled(format_uptime(info.uptime_secs), Style::default().fg(Color::White)),
+            ]),
+            Line::from(vec![
+                Span::styled(" cpu   ", label),
+                Span::styled(format!("{} cores", info.cpu_count), Style::default().fg(Color::White)),
+            ]),
         ];
-        let sys_widget = Paragraph::new(sys_lines)
+        let sys_widget = Paragraph::new(lines)
             .block(Block::default()
                 .borders(Borders::ALL)
-                .title(texts.system_monitor)
-                .title_style(Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD))
-                .border_style(Style::default().fg(Color::DarkGray)));
+                .title(Span::styled(" system ", Style::default().fg(Color::Rgb(120, 140, 170))))
+                .border_style(Style::default().fg(Color::Rgb(50, 50, 65))));
         f.render_widget(sys_widget, sidebar_chunks[0]);
-
-        // OS Info
-        let info_lines = vec![
-            Line::from(vec![
-                Span::styled(" OS   ", Style::default().fg(Color::Cyan)),
-                Span::raw(info.os_name.clone()),
-            ]),
-            Line::from(vec![
-                Span::styled(" Host ", Style::default().fg(Color::Cyan)),
-                Span::raw(info.hostname.clone()),
-            ]),
-            Line::from(vec![
-                Span::styled(" Up   ", Style::default().fg(Color::Cyan)),
-                Span::raw(format_uptime(info.uptime_secs)),
-            ]),
-            Line::from(vec![
-                Span::styled(" CPUs ", Style::default().fg(Color::Cyan)),
-                Span::raw(format!("{}", info.cpu_count)),
-            ]),
-        ];
-        let info_widget = Paragraph::new(info_lines)
-            .block(Block::default()
-                .borders(Borders::ALL)
-                .title(texts.info)
-                .title_style(Style::default().fg(Color::Blue))
-                .border_style(Style::default().fg(Color::DarkGray)));
-        f.render_widget(info_widget, sidebar_chunks[1]);
     } else {
-        let empty = Paragraph::new(texts.waiting)
-            .style(Style::default().fg(Color::DarkGray))
-            .block(Block::default().borders(Borders::ALL).title(texts.system_monitor));
+        let empty = Paragraph::new(Line::from(Span::styled(
+            " loading...",
+            Style::default().fg(Color::Rgb(70, 70, 80)),
+        )))
+        .block(Block::default()
+            .borders(Borders::ALL)
+            .title(Span::styled(" system ", Style::default().fg(Color::Rgb(120, 140, 170))))
+            .border_style(Style::default().fg(Color::Rgb(50, 50, 65))));
         f.render_widget(empty, sidebar_chunks[0]);
-
-        let empty2 = Paragraph::new("")
-            .block(Block::default().borders(Borders::ALL).title(texts.info));
-        f.render_widget(empty2, sidebar_chunks[1]);
     }
 
-    // Quick commands reference
+    // Compact quick commands (2 columns)
+    let mc = Style::default().fg(Color::Rgb(80, 160, 120));
+    let dc = Style::default().fg(Color::Rgb(80, 80, 95));
     let hints = vec![
-        Line::from(""),
         Line::from(vec![
-            Span::styled(" :ls  ", Style::default().fg(Color::Green)),
-            Span::styled("ls -la", Style::default().fg(Color::DarkGray)),
+            Span::styled(" :ls ", mc), Span::styled("ls -la   ", dc),
+            Span::styled(":top ", mc), Span::styled("htop", dc),
         ]),
         Line::from(vec![
-            Span::styled(" :top ", Style::default().fg(Color::Green)),
-            Span::styled("htop", Style::default().fg(Color::DarkGray)),
+            Span::styled(" :d  ", mc), Span::styled("docker ps", dc),
+            Span::styled("  :dc", mc), Span::styled(" up -d", dc),
         ]),
         Line::from(vec![
-            Span::styled(" :d   ", Style::default().fg(Color::Green)),
-            Span::styled("docker ps", Style::default().fg(Color::DarkGray)),
+            Span::styled(" :u  ", mc), Span::styled("uptime   ", dc),
+            Span::styled(":p   ", mc), Span::styled("pwd", dc),
         ]),
         Line::from(vec![
-            Span::styled(" :dc  ", Style::default().fg(Color::Green)),
-            Span::styled("docker compose up", Style::default().fg(Color::DarkGray)),
-        ]),
-        Line::from(vec![
-            Span::styled(" :u   ", Style::default().fg(Color::Green)),
-            Span::styled("uptime", Style::default().fg(Color::DarkGray)),
-        ]),
-        Line::from(vec![
-            Span::styled(" :p   ", Style::default().fg(Color::Green)),
-            Span::styled("pwd", Style::default().fg(Color::DarkGray)),
-        ]),
-        Line::from(vec![
-            Span::styled(" :q   ", Style::default().fg(Color::Green)),
-            Span::styled("exit", Style::default().fg(Color::DarkGray)),
+            Span::styled(" :exit ", mc), Span::styled("exit", dc),
         ]),
     ];
     let hints_widget = Paragraph::new(hints)
         .block(Block::default()
             .borders(Borders::ALL)
-            .title(texts.quick_commands)
-            .title_style(Style::default().fg(Color::Yellow))
-            .border_style(Style::default().fg(Color::DarkGray)));
-    f.render_widget(hints_widget, sidebar_chunks[2]);
+            .title(Span::styled(" macros ", Style::default().fg(Color::Rgb(80, 160, 120))))
+            .border_style(Style::default().fg(Color::Rgb(50, 50, 65))));
+    f.render_widget(hints_widget, sidebar_chunks[1]);
 
     // Status bar
+    let (api_sym, api_col) = if app.config.api_key.is_some() {
+        ("● sync", Color::Green)
+    } else {
+        ("○ local", Color::Rgb(70, 70, 80))
+    };
     let status = Paragraph::new(Line::from(vec![
-        Span::styled(" TermiSSH ", Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD)),
-        Span::styled("v0.2.0", Style::default().fg(Color::DarkGray)),
+        Span::styled(" TermiSSH ", Style::default().fg(Color::White).add_modifier(Modifier::BOLD)),
+        Span::styled("v0.2.0  ", Style::default().fg(Color::Rgb(70, 70, 80))),
+        Span::styled(api_sym, Style::default().fg(api_col)),
     ]))
-    .block(Block::default().borders(Borders::ALL).border_style(Style::default().fg(Color::DarkGray)));
-    f.render_widget(status, sidebar_chunks[3]);
+    .block(Block::default()
+        .borders(Borders::ALL)
+        .border_style(Style::default().fg(Color::Rgb(50, 50, 65))));
+    f.render_widget(status, sidebar_chunks[2]);
 }
 
 fn render_remote_sidebar(f: &mut Frame, app: &App, info: &SessionInfo, area: Rect) {
@@ -1282,144 +1167,92 @@ fn render_remote_sidebar(f: &mut Frame, app: &App, info: &SessionInfo, area: Rec
     let sidebar_chunks = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
-            Constraint::Length(3),   // Tabs
-            Constraint::Min(0),      // Tab content
-            Constraint::Length(11),  // System gauges
-            Constraint::Length(5),   // Connection info
+            Constraint::Length(4),   // Connection info
+            Constraint::Min(0),      // Command history
+            Constraint::Length(11),  // Quick commands
         ])
         .split(area);
 
-    // Tabs
-    let tab_titles = vec![texts.open_ports, texts.command_history, texts.network_info];
-    let selected_tab = match app.sidebar_tab {
-        SidebarTab::OpenPorts => 0,
-        SidebarTab::CommandHistory => 1,
-        SidebarTab::NetworkInfo => 2,
-    };
-
-    let tabs = Tabs::new(tab_titles)
-        .block(Block::default().borders(Borders::ALL).title(texts.info)
-            .title_style(Style::default().fg(Color::Blue))
-            .border_style(Style::default().fg(Color::DarkGray)))
-        .select(selected_tab)
-        .style(Style::default().fg(Color::DarkGray))
-        .highlight_style(Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD));
-
-    f.render_widget(tabs, sidebar_chunks[0]);
-
-    // Tab content
-    let content = match app.sidebar_tab {
-        SidebarTab::OpenPorts => {
-            let items: Vec<Line> = if info.open_ports.is_empty() {
-                vec![Line::from(Span::styled(texts.no_ports, Style::default().fg(Color::DarkGray)))]
-            } else {
-                info.open_ports.iter().map(|p| {
-                    Line::from(vec![
-                        Span::styled(" : ", Style::default().fg(Color::Green)),
-                        Span::raw(p.as_str()),
-                    ])
-                }).collect()
-            };
-            Paragraph::new(items).block(Block::default().borders(Borders::ALL)
-                .border_style(Style::default().fg(Color::DarkGray)))
-        }
-        SidebarTab::CommandHistory => {
-            let items: Vec<Line> = if info.command_history.is_empty() {
-                vec![Line::from(Span::styled(texts.no_commands, Style::default().fg(Color::DarkGray)))]
-            } else {
-                info.command_history.iter().rev().take(20).map(|c| {
-                    Line::from(vec![
-                        Span::styled(" $ ", Style::default().fg(Color::Yellow)),
-                        Span::raw(c.as_str()),
-                    ])
-                }).collect()
-            };
-            Paragraph::new(items).block(Block::default().borders(Borders::ALL)
-                .border_style(Style::default().fg(Color::DarkGray)))
-        }
-        SidebarTab::NetworkInfo => {
-            let items: Vec<Line> = if info.network_interfaces.is_empty() {
-                vec![Line::from(Span::styled(texts.no_network, Style::default().fg(Color::DarkGray)))]
-            } else {
-                info.network_interfaces.iter().map(|n| {
-                    Line::from(vec![
-                        Span::styled(" ~ ", Style::default().fg(Color::Magenta)),
-                        Span::raw(n.as_str()),
-                    ])
-                }).collect()
-            };
-            Paragraph::new(items).block(Block::default().borders(Borders::ALL)
-                .border_style(Style::default().fg(Color::DarkGray)))
-        }
-    };
-    f.render_widget(content, sidebar_chunks[1]);
-
-    // System info with gauges
-    let bar_width = area.width.saturating_sub(2);
-    let mut sys_lines = vec![
-        gauge_bar(" CPU  ", info.cpu_usage, bar_width),
-        gauge_bar(" RAM  ", info.memory_usage, bar_width),
-        Line::from(Span::styled(
-            format!("        {} / {}",
-                format_bytes_mb(info.memory_used_mb),
-                format_bytes_mb(info.memory_total_mb)),
-            Style::default().fg(Color::DarkGray),
-        )),
-        gauge_bar(" Disk ", info.disk_usage_percent, bar_width),
-        Line::from(Span::styled(
-            format!("        {:.1} / {:.1} GB", info.disk_used_gb, info.disk_total_gb),
-            Style::default().fg(Color::DarkGray),
-        )),
-    ];
-    if !info.load_average.is_empty() {
-        sys_lines.push(Line::from(vec![
-            Span::styled(" Load ", Style::default().fg(Color::Cyan)),
-            Span::raw(info.load_average.clone()),
-        ]));
-    }
-    if !info.os_info.is_empty() {
-        sys_lines.push(Line::from(vec![
-            Span::styled(" OS   ", Style::default().fg(Color::Cyan)),
-            Span::raw(info.os_info.clone()),
-        ]));
-    }
-    sys_lines.push(Line::from(vec![
-        Span::styled(" PWD  ", Style::default().fg(Color::Cyan)),
-        Span::raw(info.current_path.clone()),
-    ]));
-
-    let sys_widget = Paragraph::new(sys_lines)
-        .block(Block::default()
-            .borders(Borders::ALL)
-            .title(texts.remote_system)
-            .title_style(Style::default().fg(Color::Magenta).add_modifier(Modifier::BOLD))
-            .border_style(Style::default().fg(Color::Magenta)));
-    f.render_widget(sys_widget, sidebar_chunks[2]);
-
     // Connection info
-    let mut conn_lines = vec![
+    let conn_lines = vec![
+        Line::from(""),
         Line::from(vec![
-            Span::styled(" User ", Style::default().fg(Color::Green)),
-            Span::raw(info.username.clone()),
-        ]),
-        Line::from(vec![
-            Span::styled(" Host ", Style::default().fg(Color::Green)),
-            Span::raw(info.hostname.clone()),
+            Span::styled("  \u{25CF} ", Style::default().fg(Color::Green)),
+            Span::styled(
+                format!("{}@{}", info.username, info.hostname),
+                Style::default().fg(Color::White).add_modifier(Modifier::BOLD),
+            ),
         ]),
     ];
-    if !info.uptime.is_empty() {
-        conn_lines.push(Line::from(vec![
-            Span::styled(" Up   ", Style::default().fg(Color::Green)),
-            Span::raw(info.uptime.clone()),
-        ]));
-    }
     let conn_widget = Paragraph::new(conn_lines)
         .block(Block::default()
             .borders(Borders::ALL)
             .title(texts.connection)
             .title_style(Style::default().fg(Color::Green).add_modifier(Modifier::BOLD))
             .border_style(Style::default().fg(Color::Green)));
-    f.render_widget(conn_widget, sidebar_chunks[3]);
+    f.render_widget(conn_widget, sidebar_chunks[0]);
+
+    // Command history
+    let history_lines: Vec<Line> = if info.command_history.is_empty() {
+        vec![Line::from(Span::styled(
+            format!("  {}", texts.no_commands),
+            Style::default().fg(Color::DarkGray),
+        ))]
+    } else {
+        info.command_history.iter().rev().take(20).map(|c| {
+            Line::from(vec![
+                Span::styled("  $ ", Style::default().fg(Color::Yellow)),
+                Span::styled(c.to_string(), Style::default().fg(Color::White)),
+            ])
+        }).collect()
+    };
+    let history_widget = Paragraph::new(history_lines)
+        .block(Block::default()
+            .borders(Borders::ALL)
+            .title(format!(" {} ", texts.command_history))
+            .title_style(Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD))
+            .border_style(Style::default().fg(Color::DarkGray)));
+    f.render_widget(history_widget, sidebar_chunks[1]);
+
+    // Quick commands
+    let hints = vec![
+        Line::from(""),
+        Line::from(vec![
+            Span::styled("  :ls  ", Style::default().fg(Color::Green)),
+            Span::styled("ls -la", Style::default().fg(Color::DarkGray)),
+        ]),
+        Line::from(vec![
+            Span::styled("  :top ", Style::default().fg(Color::Green)),
+            Span::styled("htop", Style::default().fg(Color::DarkGray)),
+        ]),
+        Line::from(vec![
+            Span::styled("  :d   ", Style::default().fg(Color::Green)),
+            Span::styled("docker ps", Style::default().fg(Color::DarkGray)),
+        ]),
+        Line::from(vec![
+            Span::styled("  :dc  ", Style::default().fg(Color::Green)),
+            Span::styled("docker compose up", Style::default().fg(Color::DarkGray)),
+        ]),
+        Line::from(vec![
+            Span::styled("  :u   ", Style::default().fg(Color::Green)),
+            Span::styled("uptime", Style::default().fg(Color::DarkGray)),
+        ]),
+        Line::from(vec![
+            Span::styled("  :p   ", Style::default().fg(Color::Green)),
+            Span::styled("pwd", Style::default().fg(Color::DarkGray)),
+        ]),
+        Line::from(vec![
+            Span::styled("  :exit", Style::default().fg(Color::Green)),
+            Span::styled("exit", Style::default().fg(Color::DarkGray)),
+        ]),
+    ];
+    let hints_widget = Paragraph::new(hints)
+        .block(Block::default()
+            .borders(Borders::ALL)
+            .title(texts.quick_commands)
+            .title_style(Style::default().fg(Color::Cyan))
+            .border_style(Style::default().fg(Color::DarkGray)));
+    f.render_widget(hints_widget, sidebar_chunks[2]);
 }
 
 // --- SSH LOGIC ---
@@ -1453,11 +1286,13 @@ fn start_ssh_session_in_tui(terminal: &mut Terminal<CrosstermBackend<io::Stdout>
     channel.shell()?;
     sess.set_blocking(false);
 
+    // Keep session alive until function returns (channel depends on it)
+    let _sess = sess;
+
     // Create session info
     app.session_info = Some(SessionInfo {
         username: host.username.clone(),
         hostname: host.hostname.clone(),
-        current_path: "~".to_string(),
         ..Default::default()
     });
 
@@ -1500,59 +1335,8 @@ fn start_ssh_session_in_tui(terminal: &mut Terminal<CrosstermBackend<io::Stdout>
 
     let mut input_buffer = String::new();
 
-    // Stats thread - BATCHED single channel
-    let sess_clone = Arc::new(Mutex::new(sess));
-    let sess_stats = sess_clone.clone();
-    let running_stats = running.clone();
-    let session_info_clone = Arc::new(Mutex::new(app.session_info.clone()));
-    let session_info_stats = session_info_clone.clone();
-
-    let stats_thread = thread::spawn(move || {
-        while running_stats.load(Ordering::Relaxed) {
-            thread::sleep(Duration::from_secs(3));
-
-            if let Ok(sess) = sess_stats.lock() {
-                if let Ok(mut ch) = sess.channel_session() {
-                    let batch_cmd = concat!(
-                        "echo '===CPU==='; ",
-                        "top -bn1 2>/dev/null | grep 'Cpu(s)' | sed 's/.*, *\\([0-9.]*\\)%* id.*/\\1/' | awk '{print 100 - $1}'; ",
-                        "echo '===MEM==='; ",
-                        "free -b 2>/dev/null | grep Mem | awk '{printf \"%d %d\\n\", $3, $2}'; ",
-                        "echo '===DISK==='; ",
-                        "df -B1 --total 2>/dev/null | tail -1 | awk '{printf \"%d %d\\n\", $3, $2}'; ",
-                        "echo '===PWD==='; ",
-                        "pwd; ",
-                        "echo '===PORTS==='; ",
-                        "ss -tuln 2>/dev/null | grep LISTEN | awk '{print $5}' | sed 's/.*://g' | sort -un; ",
-                        "echo '===LOAD==='; ",
-                        "uptime 2>/dev/null | sed 's/.*load average: //'; ",
-                        "echo '===UPTIME==='; ",
-                        "uptime -p 2>/dev/null || uptime; ",
-                        "echo '===OS==='; ",
-                        "cat /etc/os-release 2>/dev/null | grep PRETTY_NAME | cut -d= -f2 | tr -d '\"'; ",
-                        "echo '===NET==='; ",
-                        "ip -4 addr show 2>/dev/null | grep inet | awk '{print $NF\": \"$2}'; ",
-                        "echo '===END==='"
-                    );
-
-                    let _ = ch.exec(batch_cmd);
-                    let mut output = String::new();
-                    let _ = ch.read_to_string(&mut output);
-                    let _ = ch.wait_close();
-
-                    parse_batch_stats(&output, &session_info_stats);
-                }
-            }
-        }
-    });
-
     // Main loop
     loop {
-        // Update session info from stats thread
-        if let Ok(info) = session_info_clone.lock() {
-            app.session_info = info.clone();
-        }
-
         terminal.draw(|f| {
             render_ssh_session(f, app, &output_buffer, &input_buffer);
         })?;
@@ -1585,15 +1369,6 @@ fn start_ssh_session_in_tui(terminal: &mut Terminal<CrosstermBackend<io::Stdout>
                                     info.command_history.remove(0);
                                 }
                             }
-                            // Also update the shared session info
-                            if let Ok(mut shared_info) = session_info_clone.lock() {
-                                if let Some(ref mut info) = *shared_info {
-                                    info.command_history.push(input_buffer.clone());
-                                    if info.command_history.len() > 50 {
-                                        info.command_history.remove(0);
-                                    }
-                                }
-                            }
                             input_buffer.clear();
                         }
                         let mut ch = channel_clone.lock().unwrap();
@@ -1604,7 +1379,7 @@ fn start_ssh_session_in_tui(terminal: &mut Terminal<CrosstermBackend<io::Stdout>
                             input_buffer.pop();
                         }
                         let mut ch = channel_clone.lock().unwrap();
-                        let _ = ch.write_all(&[8u8, 32u8, 8u8]);
+                        let _ = ch.write_all(&[127u8]);
                     }
                     KeyCode::Tab => {
                         let mut ch = channel_clone.lock().unwrap();
@@ -1634,7 +1409,6 @@ fn start_ssh_session_in_tui(terminal: &mut Terminal<CrosstermBackend<io::Stdout>
 
     running.store(false, Ordering::Relaxed);
     let _ = read_thread.join();
-    let _ = stats_thread.join();
     app.session_info = None;
 
     Ok(())
@@ -1647,10 +1421,9 @@ fn render_ssh_session(f: &mut Frame, app: &App, output_buffer: &Arc<Mutex<Vec<u8
         .constraints([Constraint::Percentage(70), Constraint::Percentage(30)])
         .split(f.size());
 
-    // Terminal output
+    // Terminal output - ham çıktıyı göster
     let output = output_buffer.lock().unwrap();
-    let cleaned = strip_ansi_escapes::strip(&*output);
-    let output_str = String::from_utf8_lossy(&cleaned);
+    let output_str = String::from_utf8_lossy(&*output);
 
     let lines: Vec<&str> = output_str.lines().collect();
     let visible_lines = (main_chunks[0].height as usize).saturating_sub(2);
