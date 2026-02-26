@@ -16,3 +16,6 @@ ureq = { version = "2", features = ["json"] }
 dotenv = "0.15"
 sysinfo = "0.30"
 strip-ansi-escapes = "0.2"
+
+[target.'cfg(target_env = "musl")'.dependencies]
+openssl = { version = "0.10", features = ["vendored"] }
