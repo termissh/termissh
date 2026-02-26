@@ -1,4 +1,4 @@
-name: Build
+name: Build and Release
 
 on:
   push:
@@ -7,21 +7,25 @@ on:
   pull_request:
   workflow_dispatch:
 
+permissions:
+  contents: read
+
 jobs:
   build:
     name: Build (${{ matrix.os }})
     runs-on: ${{ matrix.os }}
     strategy:
+      fail-fast: false
       matrix:
         include:
           - os: ubuntu-latest
             target: x86_64-unknown-linux-musl
             binary: termissh
-            artifact: termissh-linux-x86_64
+            package_name: termissh-linux-x86_64
           - os: windows-latest
             target: x86_64-pc-windows-msvc
             binary: termissh.exe
-            artifact: termissh-windows-x86_64.exe
+            package_name: termissh-windows-x86_64
 
     steps:
       - uses: actions/checkout@v4
@@ -33,16 +37,36 @@ jobs:
 
       - name: Install musl tools (Linux)
         if: matrix.os == 'ubuntu-latest'
-        run: sudo apt-get install -y musl-tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y musl-tools
 
       - name: Build
         run: cargo build --release --target ${{ matrix.target }}
 
+      - name: Package Linux archive
+        if: matrix.os == 'ubuntu-latest'
+        shell: bash
+        run: |
+          mkdir -p dist
+          cp target/${{ matrix.target }}/release/${{ matrix.binary }} dist/${{ matrix.binary }}
+          tar -C dist -czf dist/${{ matrix.package_name }}.tar.gz ${{ matrix.binary }}
+
+      - name: Package Windows archive
+        if: matrix.os == 'windows-latest'
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force -Path dist | Out-Null
+          Copy-Item "target/${{ matrix.target }}/release/${{ matrix.binary }}" "dist/${{ matrix.binary }}"
+          Compress-Archive -Path "dist/${{ matrix.binary }}" -DestinationPath "dist/${{ matrix.package_name }}.zip" -Force
+
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
-          name: ${{ matrix.artifact }}
-          path: target/${{ matrix.target }}/release/${{ matrix.binary }}
+          name: ${{ matrix.package_name }}
+          path: |
+            dist/${{ matrix.package_name }}.*
+          if-no-files-found: error
 
   release:
     name: Create Release
@@ -57,9 +81,15 @@ jobs:
         with:
           path: artifacts
 
+      - name: Prepare release files
+        run: |
+          mkdir -p release
+          find artifacts -type f \( -name "*.zip" -o -name "*.tar.gz" \) -exec cp {} release/ \;
+          cd release
+          sha256sum * > SHA256SUMS.txt
+
       - name: Create Release
         uses: softprops/action-gh-release@v2
         with:
-          files: |
-            artifacts/termissh-linux-x86_64/termissh
-            artifacts/termissh-windows-x86_64.exe/termissh.exe
+          generate_release_notes: true
+          files: release/*

@@ -1,68 +1,53 @@
 # TermiSSH
 
-Terminal tabanlı SSH bağlantı yöneticisi.
+TermiSSH is a simple terminal-based SSH connection manager.
 
-## Kurulum
+## Build
 
 ```bash
 cargo build --release
 ```
 
-## Yapılandırma
-
-API senkronizasyonu için `.env` dosyası oluşturun:
-
-```bash
-cp .env.example .env
-```
-
-`.env` dosyasını düzenleyin:
-
-```env
-API_URL=https://termissh.org
-```
-
-API Key'i uygulama içinden ayarlayın (s tuşuna basın).
-
-API yapılandırması opsiyoneldir. Eğer `.env` dosyası yoksa veya API bilgileri girilmemişse, uygulama sadece yerel mod ile çalışır.
-
-## Kullanım
+## Run
 
 ```bash
 cargo run
 ```
 
-### Kısayollar
+## Optional API Sync
 
-- `↑/↓`: Sunucu seçimi
-- `Enter`: Seçili sunucuya bağlan
-- `n`: Yeni sunucu ekle
-- `e`: Sunucu düzenle
-- `d`: Sunucu sil
-- `s`: API Key ayarla
-- `q`: Çıkış
+Create a `.env` file and set:
 
-### SSH Oturumu İçinde
+```env
+API_URL=https://termissh.org
+```
 
-- `:p` → `pwd`
-- `:ls` → `ls -la`
-- `:top` → `htop`
-- `:u` → `uptime`
-- `:d` → `docker ps`
-- `:dc` → `docker compose up -d`
-- `:exit` → `exit`
+Open the app and press `s` to set your API key.
+If API settings are missing or unavailable, TermiSSH works in local-only mode.
 
-Not: htop, vim, nano gibi interaktif uygulamalarda `:` makroları çalışmaz. Bu uygulamalardan çıkmak için kendi çıkış tuşlarını kullanın (htop için `q`, vim için `:q`).
+## Shortcuts
 
-## API Senkronizasyonu
+- `Up/Down`: Select server
+- `Enter`: Connect to selected server
+- `n`: Add server
+- `e`: Edit server
+- `d`: Delete server
+- `s`: Set API key
+- `q`: Quit
 
-Eğer `.env` dosyasında `API_URL` tanımlı ve uygulama içinden API Key ayarlanmışsa:
+## Session Macros
 
-- Uygulama başladığında sunucular API'den çekilir
-- Yeni eklenen sunucular API'ye kaydedilir
-- Düzenlenen sunucular API'de güncellenir
-- Silinen sunucular API'den de silinir
+- `:p` -> `pwd`
+- `:ls` -> `ls -la`
+- `:top` -> `htop`
+- `:u` -> `uptime`
+- `:d` -> `docker ps`
+- `:dc` -> `docker compose up -d`
+- `:exit` -> `exit`
 
-API Key'i ayarlamak için uygulamayı açın ve `s` tuşuna basın.
+Note: `:` macros do not work inside interactive apps like `htop`, `vim`, or `nano`.
 
-API bağlantısı başarısız olursa, uygulama yerel config dosyasını kullanır.
+## Contact
+
+- Website: https://termissh.org
+- Email: hacimertgokhan@gmail.com
