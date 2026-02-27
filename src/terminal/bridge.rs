@@ -3,6 +3,8 @@ use anyhow::{Context, Result};
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::process::{Child, Command, Stdio};
+#[cfg(windows)]
+use std::os::windows::process::CommandExt;
 
 /// Find the termissh-relay binary next to the main binary
 pub fn find_relay_binary() -> Result<String> {
@@ -70,6 +72,12 @@ pub fn spawn_relay_child(relay_path: &str, host: &Host) -> Result<Child> {
     cmd.stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
+
+    #[cfg(windows)]
+    {
+        const CREATE_NO_WINDOW: u32 = 0x08000000;
+        cmd.creation_flags(CREATE_NO_WINDOW);
+    }
 
     for (key, value) in build_relay_env(host) {
         cmd.env(key, value);
