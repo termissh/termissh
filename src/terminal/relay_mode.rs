@@ -6,63 +6,54 @@ use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::Duration;
 
-fn main() {
-    let host = env::var("TERMISSH_HOST").unwrap_or_else(|_| {
-        eprintln!("TERMISSH_HOST not set");
-        std::process::exit(1);
-    });
+pub const INTERNAL_RELAY_ARG: &str = "--relay-internal";
+
+pub fn is_internal_relay_mode() -> bool {
+    env::args().any(|arg| arg == INTERNAL_RELAY_ARG)
+}
+
+fn fatal(message: &str) -> ! {
+    eprintln!("{}", message);
+    std::process::exit(1);
+}
+
+pub fn run_from_env() {
+    let host = env::var("TERMISSH_HOST").unwrap_or_else(|_| fatal("TERMISSH_HOST not set"));
     let port: u16 = env::var("TERMISSH_PORT")
         .unwrap_or_else(|_| "22".to_string())
         .parse()
         .unwrap_or(22);
-    let user = env::var("TERMISSH_USER").unwrap_or_else(|_| {
-        eprintln!("TERMISSH_USER not set");
-        std::process::exit(1);
-    });
+    let user = env::var("TERMISSH_USER").unwrap_or_else(|_| fatal("TERMISSH_USER not set"));
     let pass = env::var("TERMISSH_PASS").unwrap_or_default();
 
-    // TCP connect
     let tcp = match TcpStream::connect(format!("{}:{}", host, port)) {
         Ok(tcp) => tcp,
-        Err(e) => {
-            eprintln!("Connection failed: {}", e);
-            std::process::exit(1);
-        }
+        Err(e) => fatal(&format!("Connection failed: {}", e)),
     };
 
-    // SSH handshake
     let mut sess = ssh2::Session::new().expect("Failed to create SSH session");
     sess.set_tcp_stream(tcp);
     if let Err(e) = sess.handshake() {
-        eprintln!("SSH handshake failed: {}", e);
-        std::process::exit(1);
+        fatal(&format!("SSH handshake failed: {}", e));
     }
 
-    // Authentication
     let mut authenticated = false;
     if sess.userauth_agent(&user).is_ok() {
         authenticated = true;
     }
     if !authenticated && !pass.is_empty() {
         if let Err(e) = sess.userauth_password(&user, &pass) {
-            eprintln!("Password auth failed: {}", e);
-            std::process::exit(1);
+            fatal(&format!("Password auth failed: {}", e));
         }
     } else if !authenticated {
-        eprintln!("Authentication failed: no password and agent auth failed");
-        std::process::exit(1);
+        fatal("Authentication failed: no password and agent auth failed");
     }
 
-    // Open channel with PTY
     let mut channel = match sess.channel_session() {
         Ok(ch) => ch,
-        Err(e) => {
-            eprintln!("Channel open failed: {}", e);
-            std::process::exit(1);
-        }
+        Err(e) => fatal(&format!("Channel open failed: {}", e)),
     };
 
-    // Get terminal size from environment (set by parent PTY / iced_term)
     let cols: u32 = env::var("COLUMNS")
         .unwrap_or_else(|_| "120".to_string())
         .parse()
@@ -73,13 +64,11 @@ fn main() {
         .unwrap_or(40);
 
     if let Err(e) = channel.request_pty("xterm-256color", None, Some((cols, rows, 0, 0))) {
-        eprintln!("PTY request failed: {}", e);
-        std::process::exit(1);
+        fatal(&format!("PTY request failed: {}", e));
     }
 
     if let Err(e) = channel.shell() {
-        eprintln!("Shell request failed: {}", e);
-        std::process::exit(1);
+        fatal(&format!("Shell request failed: {}", e));
     }
 
     sess.set_blocking(false);
@@ -87,7 +76,6 @@ fn main() {
     let channel = Arc::new(Mutex::new(channel));
     let running = Arc::new(AtomicBool::new(true));
 
-    // Thread: SSH channel -> stdout
     let ch_read = channel.clone();
     let r1 = running.clone();
     let stdout_thread = thread::spawn(move || {
@@ -117,7 +105,6 @@ fn main() {
                 }
             }
 
-            // Check EOF
             if ch_read.lock().unwrap().eof() {
                 r1.store(false, Ordering::Relaxed);
                 break;
@@ -125,7 +112,6 @@ fn main() {
         }
     });
 
-    // Thread: stdin -> SSH channel
     let ch_write = channel.clone();
     let r2 = running.clone();
     let stdin_thread = thread::spawn(move || {
@@ -150,7 +136,6 @@ fn main() {
         }
     });
 
-    // Wait for threads
     let _ = stdout_thread.join();
     running.store(false, Ordering::Relaxed);
     let _ = stdin_thread.join();

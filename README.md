@@ -7,7 +7,7 @@ It provides a modern GUI (`iced`), multi-tab connections, integrated terminal re
 
 - Multi-host SSH management with local persistence
 - Multi-tab terminal sessions in a single window
-- Embedded terminal bridge (`termissh-relay`) for interactive shells
+- Embedded terminal bridge (internal relay mode in `termissh`)
 - Theme/language settings and API-based host synchronization
 - Basic remote structure listing for connected hosts
 - Cross-platform release packaging via GitHub Actions
@@ -15,7 +15,7 @@ It provides a modern GUI (`iced`), multi-tab connections, integrated terminal re
 ## Architecture
 
 - `termissh`: GUI application and session orchestration
-- `termissh-relay`: SSH relay binary used by GUI tabs
+- Internal relay mode: spawned as `termissh --relay-internal` by GUI tabs
 - `src/ui/*`: toolbar, sidebar, tabs, status bar, dialogs
 - `src/terminal/*`: relay discovery and process bridge
 
@@ -34,13 +34,12 @@ cargo run --bin termissh
 ## Build
 
 ```bash
-cargo build --release --bin termissh --bin termissh-relay
+cargo build --release --bin termissh
 ```
 
 Main outputs:
 
 - `target/release/termissh(.exe)`
-- `target/release/termissh-relay(.exe)`
 
 ## Configuration
 

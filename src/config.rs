@@ -144,6 +144,8 @@ pub struct AppConfig {
     pub hosts: Vec<Host>,
     pub api_key: Option<String>,
     #[serde(default)]
+    pub api_url: Option<String>,
+    #[serde(default)]
     pub language: Language,
     #[serde(default)]
     pub theme: AppTheme,

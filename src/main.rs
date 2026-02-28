@@ -25,6 +25,11 @@ fn app_icon() -> Option<iced::window::Icon> {
 }
 
 fn main() -> iced::Result {
+    if terminal::relay_mode::is_internal_relay_mode() {
+        terminal::relay_mode::run_from_env();
+        return Ok(());
+    }
+
     iced::application(App::title, App::update, App::view)
         .window(iced::window::Settings {
             icon: app_icon(),

@@ -23,6 +23,10 @@ use crate::ui::{dialogs, ftp_panel, sidebar, status_bar, tab_bar, toolbar};
 const TERMINAL_ROWS: u16 = 40;
 const TERMINAL_COLS: u16 = 132;
 
+fn normalize_api_url(input: &str) -> String {
+    input.trim().trim_end_matches('/').to_string()
+}
+
 // --- Data structures ---
 
 #[derive(Debug)]
@@ -243,7 +247,17 @@ impl App {
         dotenv::dotenv().ok();
         let config = config::load_config();
         let theme = config.theme;
-        let api_url = std::env::var("API_URL").unwrap_or_else(|_| "https://termissh.org".to_string());
+        let api_url = config
+            .api_url
+            .clone()
+            .map(|u| normalize_api_url(&u))
+            .filter(|u| !u.is_empty())
+            .unwrap_or_else(|| {
+                normalize_api_url(
+                    &std::env::var("API_URL")
+                        .unwrap_or_else(|_| "https://termissh.org".to_string()),
+                )
+            });
 
         let mut sys = System::new_all();
         sys.refresh_all();
@@ -287,7 +301,7 @@ impl App {
                     let host = self.config.hosts[idx].clone();
                     self.selected_host = Some(idx);
 
-                    // Check if relay binary exists
+                    // Resolve relay launcher path (single-binary internal relay mode)
                     match bridge::find_relay_binary() {
                         Ok(relay_path) => {
                             self.tab_counter += 1;
@@ -560,14 +574,27 @@ impl App {
             }
             Message::SaveSettings => {
                 if let Some(dialogs::DialogState::Settings(ref form)) = self.dialog {
-                    self.config.api_key = if form.api_key.is_empty() {
+                    let previous_api_key = self.config.api_key.clone();
+                    let previous_api_url = self.api_url.clone();
+                    let trimmed_api_key = form.api_key.trim().to_string();
+                    self.config.api_key = if trimmed_api_key.is_empty() {
                         None
                     } else {
-                        Some(form.api_key.clone())
+                        Some(trimmed_api_key)
                     };
-                    if !form.api_url.is_empty() {
-                        self.api_url = form.api_url.clone();
+                    let next_api_url = normalize_api_url(&form.api_url);
+                    if !next_api_url.is_empty() {
+                        self.api_url = next_api_url;
                     }
+                    self.config.api_url = Some(self.api_url.clone());
+
+                    let api_target_changed =
+                        previous_api_key != self.config.api_key || previous_api_url != self.api_url;
+                    if api_target_changed {
+                        // Do not keep stale remote entries when endpoint or key changes.
+                        self.config.hosts.retain(|h| h.id.is_none());
+                    }
+
                     self.theme = form.theme;
                     self.config.theme = form.theme;
                     self.config.language = form.language;
