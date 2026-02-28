@@ -14,6 +14,8 @@ pub fn view(texts: &Texts, theme: AppTheme, lc: theme::LayoutConfig) -> Element<
         toolbar_button("+ New", Message::OpenNewDialog, theme, cr),
         toolbar_button("Ping", Message::PingAll, theme, cr),
         horizontal_space(),
+        toolbar_button("Aliases", Message::OpenCustomCommands, theme, cr),
+        toolbar_button("Security", Message::OpenSecurityAudit, theme, cr),
         toolbar_button("FTP", Message::FtpToggle, theme, cr),
         toolbar_button(texts.settings, Message::OpenSettings, theme, cr),
     ]

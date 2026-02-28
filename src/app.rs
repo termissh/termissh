@@ -27,6 +27,192 @@ fn normalize_api_url(input: &str) -> String {
     input.trim().trim_end_matches('/').to_string()
 }
 
+// --- Security audit types ---
+
+#[derive(Debug, Clone, PartialEq)]
+pub enum SecuritySeverity {
+    Critical,
+    High,
+    Medium,
+    Low,
+    Info,
+}
+
+impl SecuritySeverity {
+    pub fn label(&self) -> &'static str {
+        match self {
+            Self::Critical => "CRITICAL",
+            Self::High => "HIGH",
+            Self::Medium => "MEDIUM",
+            Self::Low => "LOW",
+            Self::Info => "INFO",
+        }
+    }
+
+    pub fn icon(&self) -> &'static str {
+        match self {
+            Self::Critical => "🔴",
+            Self::High => "🟠",
+            Self::Medium => "🟡",
+            Self::Low => "🔵",
+            Self::Info => "⚪",
+        }
+    }
+
+    pub fn sort_key(&self) -> u8 {
+        match self {
+            Self::Critical => 0,
+            Self::High => 1,
+            Self::Medium => 2,
+            Self::Low => 3,
+            Self::Info => 4,
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct SecurityFinding {
+    pub severity: SecuritySeverity,
+    pub category: String,
+    pub message: String,
+}
+
+pub fn run_security_audit(config: &AppConfig, api_url: &str) -> Vec<SecurityFinding> {
+    let mut findings: Vec<SecurityFinding> = Vec::new();
+
+    const COMMON_PASSWORDS: &[&str] = &[
+        "password", "123456", "admin", "root", "qwerty",
+        "letmein", "welcome", "monkey", "abc123", "1234",
+        "pass", "test", "guest", "login", "master",
+    ];
+
+    for host in &config.hosts {
+        // Root login
+        if host.username == "root" {
+            findings.push(SecurityFinding {
+                severity: SecuritySeverity::High,
+                category: "Authentication".into(),
+                message: format!(
+                    "[{}] Root login detected — use a non-root user with sudo instead",
+                    host.alias
+                ),
+            });
+        }
+
+        // Password stored in config
+        if let Some(ref pwd) = host.password {
+            findings.push(SecurityFinding {
+                severity: SecuritySeverity::Medium,
+                category: "Credentials".into(),
+                message: format!(
+                    "[{}] Password saved in config — consider SSH key auth instead",
+                    host.alias
+                ),
+            });
+
+            // Short password
+            if pwd.len() < 8 {
+                findings.push(SecurityFinding {
+                    severity: SecuritySeverity::Critical,
+                    category: "Weak Password".into(),
+                    message: format!(
+                        "[{}] Password is too short ({} chars) — use at least 12 chars",
+                        host.alias,
+                        pwd.len()
+                    ),
+                });
+            }
+
+            // Common / trivial password
+            let pwd_lower = pwd.to_lowercase();
+            if COMMON_PASSWORDS.iter().any(|&c| pwd_lower == c) {
+                findings.push(SecurityFinding {
+                    severity: SecuritySeverity::Critical,
+                    category: "Weak Password".into(),
+                    message: format!(
+                        "[{}] Trivial password detected — change it immediately!",
+                        host.alias
+                    ),
+                });
+            }
+        }
+
+        // Default SSH port (info — not bad, but worth noting)
+        if host.port != 22 {
+            findings.push(SecurityFinding {
+                severity: SecuritySeverity::Info,
+                category: "Port".into(),
+                message: format!(
+                    "[{}] Non-standard SSH port {} — obscures but does not replace security",
+                    host.alias, host.port
+                ),
+            });
+        }
+    }
+
+    // HTTP API endpoint
+    if api_url.starts_with("http://") && !api_url.is_empty() {
+        findings.push(SecurityFinding {
+            severity: SecuritySeverity::High,
+            category: "API Security".into(),
+            message: "API URL uses plain HTTP — switch to HTTPS to protect your API key".into(),
+        });
+    }
+
+    // API key format
+    if let Some(ref key) = config.api_key {
+        if !key.starts_with("termi_") || key.len() < 20 {
+            findings.push(SecurityFinding {
+                severity: SecuritySeverity::Medium,
+                category: "API Key".into(),
+                message: "API key format looks unusual — expected format: termi_<uuid>".into(),
+            });
+        }
+    }
+
+    // Custom commands with potentially dangerous scripts
+    for cmd in &config.custom_commands {
+        if cmd.script.contains("rm -rf") || cmd.script.contains("mkfs") || cmd.script.contains(":(){:|:&}") {
+            findings.push(SecurityFinding {
+                severity: SecuritySeverity::High,
+                category: "Custom Command".into(),
+                message: format!(
+                    "[{}] Custom command '{}' contains potentially destructive operations",
+                    cmd.trigger, cmd.description
+                ),
+            });
+        }
+        if cmd.script.contains("sudo") {
+            findings.push(SecurityFinding {
+                severity: SecuritySeverity::Low,
+                category: "Custom Command".into(),
+                message: format!(
+                    "[{}] Custom command '{}' uses sudo — ensure you trust this script",
+                    cmd.trigger, cmd.description
+                ),
+            });
+        }
+    }
+
+    // Config encryption confirmation (always show as positive)
+    findings.push(SecurityFinding {
+        severity: SecuritySeverity::Info,
+        category: "Storage".into(),
+        message: "Config is AES-256-GCM encrypted on disk — credentials are protected at rest".into(),
+    });
+
+    if findings.iter().filter(|f| f.severity != SecuritySeverity::Info).count() == 0 {
+        findings.push(SecurityFinding {
+            severity: SecuritySeverity::Info,
+            category: "Overall".into(),
+            message: "No critical security issues found — good job!".into(),
+        });
+    }
+
+    findings.sort_by_key(|f| f.severity.sort_key());
+    findings
+}
+
 // --- Data structures ---
 
 #[derive(Debug)]
@@ -45,6 +231,9 @@ pub struct TerminalTab {
     pub search_active: bool,
     pub search_query: String,
     pub quick_cmds_visible: bool,
+    // Input tracking & suggestions
+    pub input_buffer: String,
+    pub command_history: Vec<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -206,6 +395,18 @@ pub enum Message {
     // Layout preset
     SettingsLayoutChanged(LayoutPreset),
 
+    // Command suggestions
+    TerminalSuggestionAccept(String),
+
+    // Security audit
+    OpenSecurityAudit,
+
+    // Custom commands (aliases)
+    OpenCustomCommands,
+    AddCustomCommand,
+    DeleteCustomCommand(usize),
+    SaveCustomCommands,
+
     // Reserved for future richer terminal integration
     TerminalEvent(u64, String),
 }
@@ -352,6 +553,8 @@ impl App {
                                                 search_active: false,
                                                 search_query: String::new(),
                                                 quick_cmds_visible: false,
+                                                input_buffer: String::new(),
+                                                command_history: Vec::new(),
                                             }
                                         }
                                         _ => TerminalTab {
@@ -373,6 +576,8 @@ impl App {
                                             search_active: false,
                                             search_query: String::new(),
                                             quick_cmds_visible: false,
+                                            input_buffer: String::new(),
+                                            command_history: Vec::new(),
                                         },
                                     }
                                 }
@@ -392,6 +597,8 @@ impl App {
                                     search_active: false,
                                     search_query: String::new(),
                                     quick_cmds_visible: false,
+                                    input_buffer: String::new(),
+                                    command_history: Vec::new(),
                                 },
                             };
 
@@ -415,6 +622,8 @@ impl App {
                                 search_active: false,
                                 search_query: String::new(),
                                 quick_cmds_visible: false,
+                                input_buffer: String::new(),
+                                command_history: Vec::new(),
                             };
                             self.terminal_tabs.push(tab);
                             self.active_tab = Some(self.terminal_tabs.len() - 1);
@@ -557,6 +766,12 @@ impl App {
                         dialogs::DialogState::Settings(ref mut form) => match field.as_str() {
                             "api_key" => form.api_key = value,
                             "api_url" => form.api_url = value,
+                            _ => {}
+                        },
+                        dialogs::DialogState::CustomCommands(ref mut form) => match field.as_str() {
+                            "trigger" => form.new_trigger = value,
+                            "script" => form.new_script = value,
+                            "description" => form.new_description = value,
                             _ => {}
                         },
                         _ => {}
@@ -989,10 +1204,67 @@ impl App {
                     return self.update(Message::TerminalSendBytes(bytes));
                 }
             }
-            Message::TerminalSendBytes(bytes) => {
+            Message::TerminalSendBytes(mut bytes) => {
                 if self.dialog.is_some() {
                     return Task::none();
                 }
+
+                // Phase 1: Track local input buffer + intercept custom commands
+                if let Some(active) = self.active_tab {
+                    if bytes.len() == 1 && bytes[0] == 13 {
+                        // Enter pressed — check for custom command alias
+                        let buffer = self
+                            .terminal_tabs
+                            .get(active)
+                            .map(|t| t.input_buffer.trim().to_string())
+                            .unwrap_or_default();
+
+                        if !buffer.is_empty() {
+                            let custom = self
+                                .config
+                                .custom_commands
+                                .iter()
+                                .find(|c| c.trigger == buffer)
+                                .cloned();
+
+                            if let Some(cc) = custom {
+                                // Replace with Ctrl+U (clear line) + script + \r
+                                let mut replacement = vec![21u8];
+                                replacement.extend_from_slice(cc.script.as_bytes());
+                                replacement.push(b'\r');
+                                bytes = replacement;
+                            } else if let Some(tab) = self.terminal_tabs.get_mut(active) {
+                                if tab.command_history.last().map(String::as_str) != Some(buffer.as_str()) {
+                                    tab.command_history.push(buffer);
+                                    if tab.command_history.len() > 50 {
+                                        tab.command_history.remove(0);
+                                    }
+                                }
+                            }
+                        }
+                        if let Some(tab) = self.terminal_tabs.get_mut(active) {
+                            tab.input_buffer.clear();
+                        }
+                    } else if let Some(tab) = self.terminal_tabs.get_mut(active) {
+                        if bytes.len() == 1 {
+                            match bytes[0] {
+                                127 => { tab.input_buffer.pop(); }                // Backspace
+                                3 | 21 | 27 => { tab.input_buffer.clear(); }     // Ctrl+C / Ctrl+U / Esc
+                                b if b >= 32 => { tab.input_buffer.push(b as char); }
+                                _ => {}
+                            }
+                        } else if !bytes.is_empty() && bytes[0] != 27 {
+                            // Multi-byte printable text (e.g., UTF-8 from IME)
+                            if bytes.iter().all(|&b| b >= 32) {
+                                if let Ok(s) = std::str::from_utf8(&bytes) {
+                                    tab.input_buffer.push_str(s);
+                                }
+                            }
+                        }
+                    }
+                }
+
+                // Phase 2: Send bytes to SSH stdin
                 let mut should_snap_bottom = false;
                 if let Some(active) = self.active_tab {
                     if let Some(tab) = self.terminal_tabs.get(active) {
@@ -1108,6 +1380,72 @@ impl App {
             }
             Message::TerminalEvent(_id, _event) => {
                 // TODO: Handle terminal events when iced_term is integrated
+            }
+
+            // ── Command suggestions ───────────────────────────────────────
+            Message::TerminalSuggestionAccept(cmd) => {
+                let Some(i) = self.active_tab else { return Task::none(); };
+                // Update local buffer to reflect what we're inserting
+                self.terminal_tabs[i].input_buffer = cmd.clone();
+                // Send Ctrl+U to clear current input, then type the suggestion
+                let mut bytes = vec![21u8];
+                bytes.extend_from_slice(cmd.as_bytes());
+                if let Some(tab) = self.terminal_tabs.get(i) {
+                    if let Some(runtime) = self.terminal_runtime.get(&tab.id) {
+                        if let Ok(mut stdin) = runtime.stdin.lock() {
+                            let _ = stdin.write_all(&bytes);
+                            let _ = stdin.flush();
+                        }
+                    }
+                }
+            }
+
+            // ── Security audit ────────────────────────────────────────────
+            Message::OpenSecurityAudit => {
+                let findings = run_security_audit(&self.config, &self.api_url);
+                self.dialog = Some(dialogs::DialogState::SecurityAudit(findings));
+            }
+
+            // ── Custom commands (aliases) ─────────────────────────────────
+            Message::OpenCustomCommands => {
+                self.dialog = Some(dialogs::DialogState::CustomCommands(
+                    dialogs::CustomCommandsForm {
+                        commands: self.config.custom_commands.clone(),
+                        new_trigger: String::new(),
+                        new_script: String::new(),
+                        new_description: String::new(),
+                    },
+                ));
+            }
+            Message::AddCustomCommand => {
+                if let Some(dialogs::DialogState::CustomCommands(ref mut form)) = self.dialog {
+                    let trigger = form.new_trigger.trim().to_string();
+                    let script = form.new_script.trim().to_string();
+                    if !trigger.is_empty() && !script.is_empty() {
+                        form.commands.push(config::CustomCommand {
+                            trigger,
+                            script,
+                            description: form.new_description.trim().to_string(),
+                        });
+                        form.new_trigger.clear();
+                        form.new_script.clear();
+                        form.new_description.clear();
+                    }
+                }
+            }
+            Message::DeleteCustomCommand(idx) => {
+                if let Some(dialogs::DialogState::CustomCommands(ref mut form)) = self.dialog {
+                    if idx < form.commands.len() {
+                        form.commands.remove(idx);
+                    }
+                }
+            }
+            Message::SaveCustomCommands => {
+                if let Some(dialogs::DialogState::CustomCommands(ref form)) = self.dialog {
+                    self.config.custom_commands = form.commands.clone();
+                    let _ = config::save_config(&self.config);
+                }
+                self.dialog = None;
             }
         }
         Task::none()
@@ -1283,8 +1621,9 @@ impl App {
                     Column::new().spacing(4).height(Length::Fill).push(top_bar)
                 };
 
-                // Quick commands bar
+                // Quick commands bar (with recent history section)
                 if tab.quick_cmds_visible && !in_alternate_screen {
+                    // Row 1: built-in quick commands
                     let mut cmd_row = iced::widget::Row::new()
                         .spacing(3)
                         .padding([2, 6])
@@ -1319,6 +1658,131 @@ impl App {
                             ..Default::default()
                         });
                     panel = panel.push(qc_bar);
+
+                    // Row 2: recent command history (last 8, newest first)
+                    if !tab.command_history.is_empty() {
+                        let mut hist_row = iced::widget::Row::new()
+                            .spacing(3)
+                            .padding([2, 6])
+                            .align_y(Alignment::Center);
+                        hist_row = hist_row.push(
+                            text("hist:").size(9).color(p.text_muted)
+                        );
+                        for recent_cmd in tab.command_history.iter().rev().take(8) {
+                            let cmd_owned = format!("{}\r", recent_cmd);
+                            let label_owned = recent_cmd.clone();
+                            hist_row = hist_row.push(
+                                button(text(label_owned).size(10).color(p.accent))
+                                    .on_press(Message::TerminalQuickCmd(cmd_owned))
+                                    .padding([1, 6])
+                                    .style(move |_: &iced::Theme, s: button::Status| button::Style {
+                                        background: Some(iced::Background::Color(match s {
+                                            button::Status::Hovered => p.bg_hover,
+                                            _ => p.bg_primary,
+                                        })),
+                                        text_color: p.accent,
+                                        border: iced::Border {
+                                            color: p.border,
+                                            width: 1.0,
+                                            radius: cr.into(),
+                                        },
+                                        ..Default::default()
+                                    }),
+                            );
+                        }
+                        let hist_bar = container(hist_row)
+                            .width(Length::Fill)
+                            .padding([0, 2])
+                            .style(move |_: &iced::Theme| container::Style {
+                                background: Some(iced::Background::Color(p.bg_primary)),
+                                border: iced::Border {
+                                    color: p.border,
+                                    width: 1.0,
+                                    radius: cr.into(),
+                                },
+                                ..Default::default()
+                            });
+                        panel = panel.push(hist_bar);
+                    }
+                }
+
+                // Suggestion panel (autocomplete) — shown when user is typing
+                if !tab.input_buffer.is_empty() && !in_alternate_screen {
+                    let buf_lower = tab.input_buffer.to_lowercase();
+
+                    // History matches (newest first)
+                    let mut suggestions: Vec<String> = tab
+                        .command_history
+                        .iter()
+                        .rev()
+                        .filter(|cmd| {
+                            let cl = cmd.to_lowercase();
+                            cl.starts_with(&buf_lower) && cl != buf_lower
+                        })
+                        .take(4)
+                        .cloned()
+                        .collect();
+
+                    // Built-in matches
+                    for &builtin in BUILT_IN_SUGGESTIONS {
+                        if suggestions.len() >= 8 {
+                            break;
+                        }
+                        if builtin.to_lowercase().starts_with(&buf_lower)
+                            && builtin != tab.input_buffer.as_str()
+                            && !suggestions.iter().any(|s| s == builtin)
+                        {
+                            suggestions.push(builtin.to_string());
+                        }
+                    }
+
+                    if !suggestions.is_empty() {
+                        let mut sugg_row = iced::widget::Row::new()
+                            .spacing(3)
+                            .padding([2, 6])
+                            .align_y(Alignment::Center);
+                        sugg_row = sugg_row.push(
+                            text("→").size(10).color(p.text_muted)
+                        );
+                        let history_set: std::collections::HashSet<String> =
+                            tab.command_history.iter().cloned().collect();
+                        for suggestion in suggestions {
+                            let from_history = history_set.contains(&suggestion);
+                            let text_color = if from_history { p.accent } else { p.text_secondary };
+                            let cmd_str = suggestion.clone();
+                            sugg_row = sugg_row.push(
+                                button(text(suggestion).size(10).color(text_color))
+                                    .on_press(Message::TerminalSuggestionAccept(cmd_str))
+                                    .padding([1, 6])
+                                    .style(move |_: &iced::Theme, s: button::Status| button::Style {
+                                        background: Some(iced::Background::Color(match s {
+                                            button::Status::Hovered => p.bg_hover,
+                                            _ => p.bg_primary,
+                                        })),
+                                        text_color,
+                                        border: iced::Border {
+                                            color: p.border_focused,
+                                            width: 1.0,
+                                            radius: cr.into(),
+                                        },
+                                        ..Default::default()
+                                    }),
+                            );
+                        }
+                        let sugg_bar = container(sugg_row)
+                            .width(Length::Fill)
+                            .padding([0, 2])
+                            .style(move |_: &iced::Theme| container::Style {
+                                background: Some(iced::Background::Color(p.bg_primary)),
+                                border: iced::Border {
+                                    color: p.border_focused,
+                                    width: 1.0,
+                                    radius: cr.into(),
+                                },
+                                ..Default::default()
+                            });
+                        panel = panel.push(sugg_bar);
+                    }
                 }
 
                 // Search bar
@@ -1680,6 +2144,23 @@ const QUICK_CMDS: &[(&str, &str)] = &[
     ("net",     "ss -tuln\r"),
     ("env",     "env | sort\r"),
     ("disk",    "du -sh * 2>/dev/null | sort -rh | head -20\r"),
+];
+
+// ─── Built-in suggestions for autocomplete ────────────────────────────────
+const BUILT_IN_SUGGESTIONS: &[&str] = &[
+    "nano", "vim", "vi", "nvim", "emacs",
+    "ls", "la", "ll", "cd", "cp", "mv", "rm", "mkdir", "touch", "cat", "less",
+    "head", "tail", "grep", "find", "chmod", "chown", "ln", "stat", "wc", "sort", "uniq",
+    "ps", "top", "htop", "kill", "killall", "jobs", "bg", "fg", "nohup",
+    "ssh", "scp", "rsync", "curl", "wget", "ping", "netstat", "ss", "ip",
+    "apt", "apt-get", "yum", "dnf", "pacman", "pip", "pip3", "npm", "yarn", "cargo",
+    "git", "docker", "kubectl", "systemctl", "service", "journalctl",
+    "df", "du", "free", "uptime", "who", "whoami", "uname", "hostname",
+    "tar", "zip", "unzip", "gzip", "gunzip", "xz",
+    "python", "python3", "node", "ruby", "php", "bash", "sh", "zsh", "fish",
+    "sudo", "su", "exit", "logout", "clear", "history", "env", "export", "echo",
+    "source", "which", "whereis", "man", "alias", "unset", "set",
+    "mysql", "psql", "redis-cli", "mongo",
 ];
 
 // ─── Search highlight ──────────────────────────────────────────────────────

@@ -32,8 +32,11 @@ pub fn view(
     };
 
     let bar = row![
-        text("termissh").size(10).color(p.text_muted),
-        text("  v0.2.3").size(10).color(p.border),
+        text("© termissh").size(10).color(p.text_muted),
+        text("  ·  ").size(10).color(p.border),
+        text("Developed by Hacı Mert Gökhan").size(10).color(p.text_muted),
+        text("  ·  ").size(10).color(p.border),
+        text("termissh.org").size(10).color(p.accent),
         horizontal_space(),
         sync_indicator,
         text("  ·  ").size(10).color(p.border),

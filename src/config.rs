@@ -53,6 +53,11 @@ pub enum AppTheme {
     Haki,
     SoftRose,
     SoftSky,
+    // New themes
+    CyberPunk,
+    Mocha,
+    Ocean,
+    Forest,
 }
 
 impl AppTheme {
@@ -68,6 +73,10 @@ impl AppTheme {
             Self::Haki => "Haki",
             Self::SoftRose => "Soft Rose",
             Self::SoftSky => "Soft Sky",
+            Self::CyberPunk => "CyberPunk",
+            Self::Mocha => "Mocha",
+            Self::Ocean => "Ocean",
+            Self::Forest => "Forest",
         }
     }
 
@@ -83,6 +92,10 @@ impl AppTheme {
             Self::Haki,
             Self::SoftRose,
             Self::SoftSky,
+            Self::CyberPunk,
+            Self::Mocha,
+            Self::Ocean,
+            Self::Forest,
         ]
     }
 
@@ -140,6 +153,13 @@ impl std::fmt::Display for LayoutPreset {
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug, Default)]
+pub struct CustomCommand {
+    pub trigger: String,     // e.g., "-runtest"
+    pub script: String,      // e.g., "cd /app && npm test"
+    pub description: String, // optional description
+}
+
+#[derive(Serialize, Deserialize, Clone, Debug, Default)]
 pub struct AppConfig {
     pub hosts: Vec<Host>,
     pub api_key: Option<String>,
@@ -151,6 +171,8 @@ pub struct AppConfig {
     pub theme: AppTheme,
     #[serde(default)]
     pub layout: LayoutPreset,
+    #[serde(default)]
+    pub custom_commands: Vec<CustomCommand>,
 }
 
 // --- Encryption helpers ---
