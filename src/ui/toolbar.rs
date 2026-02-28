@@ -1,21 +1,24 @@
-use iced::widget::{button, container, row, text, Row};
+use iced::widget::{button, container, horizontal_space, row, text};
 use iced::{Alignment, Element, Length};
 
 use crate::app::Message;
+use crate::config::AppTheme;
 use crate::i18n::Texts;
 use crate::theme;
 
-pub fn view(texts: &Texts, dark_mode: bool) -> Element<'static, Message> {
-    let p = theme::palette(dark_mode);
+pub fn view(texts: &Texts, theme: AppTheme, lc: theme::LayoutConfig) -> Element<'static, Message> {
+    let p = theme::palette(theme);
+    let cr = lc.corner_radius;
 
-    let toolbar: Row<'static, Message> = row![
-        toolbar_button(texts.settings, Message::OpenSettings, dark_mode),
-        toolbar_button("FTP", Message::RefreshStructure, dark_mode),
-        toolbar_button(texts.new_connection, Message::OpenNewDialog, dark_mode),
-        toolbar_button(texts.ping_all, Message::PingAll, dark_mode),
+    let toolbar = row![
+        toolbar_button("+ New", Message::OpenNewDialog, theme, cr),
+        toolbar_button("Ping", Message::PingAll, theme, cr),
+        horizontal_space(),
+        toolbar_button("FTP", Message::FtpToggle, theme, cr),
+        toolbar_button(texts.settings, Message::OpenSettings, theme, cr),
     ]
-    .spacing(6)
-    .padding(6)
+    .spacing(4)
+    .padding([4, 8])
     .align_y(Alignment::Center);
 
     container(toolbar)
@@ -25,40 +28,41 @@ pub fn view(texts: &Texts, dark_mode: bool) -> Element<'static, Message> {
             border: iced::Border {
                 color: p.border,
                 width: 1.0,
-                radius: theme::CORNER_RADIUS.into(),
+                radius: cr.into(),
             },
             ..Default::default()
         })
         .into()
 }
 
-fn toolbar_button(label: &'static str, msg: Message, dark_mode: bool) -> Element<'static, Message> {
-    let p = theme::palette(dark_mode);
+fn toolbar_button(label: &'static str, msg: Message, theme: AppTheme, cr: f32) -> Element<'static, Message> {
+    let p = theme::palette(theme);
 
     button(
         text(label)
-            .size(12)
+            .size(11)
             .color(p.text_primary),
     )
     .on_press(msg)
-    .padding([4, 10])
+    .padding([3, 10])
     .style(move |_t: &iced::Theme, status: button::Status| {
         let bg = match status {
             button::Status::Hovered => p.bg_hover,
             button::Status::Pressed => p.bg_active,
-            _ => p.bg_tertiary,
+            _ => iced::Color::TRANSPARENT,
         };
         button::Style {
             background: Some(iced::Background::Color(bg)),
-            text_color: p.text_primary,
+            text_color: match status {
+                button::Status::Hovered | button::Status::Pressed => p.text_primary,
+                _ => p.text_secondary,
+            },
             border: iced::Border {
-                color: p.border,
-                width: 1.0,
-                radius: theme::CORNER_RADIUS.into(),
+                radius: cr.into(),
+                ..Default::default()
             },
             ..Default::default()
         }
     })
     .into()
 }
-

@@ -1,6 +1,6 @@
 use iced::keyboard::{key::Named, Key, Modifiers};
-use iced::widget::{button, column, container, rich_text, row, scrollable, text};
-use iced::{event, keyboard, Element, Font, Length, Subscription, Task};
+use iced::widget::{button, column, container, rich_text, row, scrollable, text, text_input, Column};
+use iced::{event, keyboard, Alignment, Element, Font, Length, Subscription, Task};
 use std::collections::HashMap;
 use std::io::{Read, Write};
 use std::process::{Child, ChildStdin};
@@ -12,11 +12,13 @@ use sysinfo::{Disks, System};
 use vt100::Parser;
 
 use crate::api;
-use crate::config::{self, AppConfig, Host, Language};
+use crate::config::{self, AppConfig, AppTheme, Host, Language, LayoutPreset};
+use crate::ftp;
 use crate::i18n::Texts;
+use rfd;
 use crate::terminal::bridge;
 use crate::theme;
-use crate::ui::{dialogs, sidebar, status_bar, tab_bar, toolbar};
+use crate::ui::{dialogs, ftp_panel, sidebar, status_bar, tab_bar, toolbar};
 
 const TERMINAL_ROWS: u16 = 40;
 const TERMINAL_COLS: u16 = 132;
@@ -33,6 +35,12 @@ pub struct TerminalTab {
     pub relay_error: Option<String>,
     pub output: String,
     pub structure: Vec<String>,
+    pub ftp: FtpState,
+    // Terminal UX
+    pub font_size: f32,
+    pub search_active: bool,
+    pub search_query: String,
+    pub quick_cmds_visible: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -60,6 +68,57 @@ pub struct LocalSystemInfo {
     pub os_name: String,
     pub hostname: String,
     pub uptime_secs: u64,
+}
+
+// --- FTP state ---
+
+#[derive(Debug, Clone, PartialEq)]
+pub enum FtpStatus {
+    Idle,
+    Error(String),
+}
+
+#[derive(Debug, Clone, PartialEq, Default)]
+pub enum FtpLayout {
+    #[default]
+    Bottom,
+    Right,
+}
+
+#[derive(Debug, Clone)]
+pub struct FtpState {
+    pub visible: bool,
+    pub connected_host: Option<Host>,
+    pub current_path: String,
+    pub entries: Vec<ftp::FtpEntry>,
+    pub loading: bool,
+    pub status: FtpStatus,
+    pub notification: Option<(String, bool)>, // (msg, is_error)
+    /// (path, click_time) — çift tık tespiti için
+    pub last_click: Option<(String, std::time::Instant)>,
+    pub layout: FtpLayout,
+    pub search_query: String,
+    pub search_results: Option<Vec<ftp::FtpEntry>>,
+    pub searching: bool,
+}
+
+impl Default for FtpState {
+    fn default() -> Self {
+        Self {
+            visible: false,
+            connected_host: None,
+            current_path: "/".to_string(),
+            entries: Vec::new(),
+            loading: false,
+            status: FtpStatus::Idle,
+            notification: None,
+            last_click: None,
+            layout: FtpLayout::Bottom,
+            search_query: String::new(),
+            search_results: None,
+            searching: false,
+        }
+    }
 }
 
 // --- Messages ---
@@ -102,11 +161,28 @@ pub enum Message {
     // Theme / Language
     ToggleTheme,
     ToggleLanguage,
-    SettingsThemeChanged(bool),
+    SettingsThemeChanged(AppTheme),
     SettingsLanguageChanged(Language),
 
     // FTP / structure
     RefreshStructure,
+
+    // SFTP browser
+    FtpToggle,
+    FtpToggleLayout,
+    FtpNavigate(String),
+    FtpRefresh,
+    FtpListResult(Result<Vec<ftp::FtpEntry>, String>),
+    FtpEntryClick(String),
+    FtpDownloadFile(String),
+    FtpDownloadResult(Result<String, String>),
+    FtpPickUploadFile,
+    FtpUploadChosen(Option<std::path::PathBuf>),
+    FtpUploadResult(Result<(), String>),
+    FtpSearchQueryChanged(String),
+    FtpSearchSubmit,
+    FtpSearchResult(Result<Vec<ftp::FtpEntry>, String>),
+    FtpClearSearch,
 
     // Embedded terminal bridge
     TerminalKeyPressed(Key, Modifiers),
@@ -114,6 +190,17 @@ pub enum Message {
     TerminalClear,
     TerminalSendCtrlC,
     TerminalPoll,
+    TerminalFontSizeInc,
+    TerminalFontSizeDec,
+    TerminalFontSizeReset,
+    TerminalSearchToggle,
+    TerminalSearchChanged(String),
+    TerminalSearchClose,
+    TerminalQuickCmdsToggle,
+    TerminalQuickCmd(String),
+
+    // Layout preset
+    SettingsLayoutChanged(LayoutPreset),
 
     // Reserved for future richer terminal integration
     TerminalEvent(u64, String),
@@ -148,14 +235,14 @@ pub struct App {
     pub ping_results: HashMap<usize, Option<u128>>,
 
     // Theme
-    pub dark_mode: bool,
+    pub theme: AppTheme,
 }
 
 impl App {
     pub fn new() -> (Self, Task<Message>) {
         dotenv::dotenv().ok();
         let config = config::load_config();
-        let dark_mode = config.dark_mode;
+        let theme = config.theme;
         let api_url = std::env::var("API_URL").unwrap_or_else(|_| "https://termissh.org".to_string());
 
         let mut sys = System::new_all();
@@ -180,7 +267,7 @@ impl App {
                 sys,
                 disks,
                 ping_results: HashMap::new(),
-                dark_mode,
+                theme,
             },
             Task::none(),
         )
@@ -246,6 +333,11 @@ impl App {
                                                     host.username, host.hostname, host.port
                                                 ),
                                                 structure: fetch_remote_structure(&host),
+                                                ftp: FtpState::default(),
+                                                font_size: 13.0,
+                                                search_active: false,
+                                                search_query: String::new(),
+                                                quick_cmds_visible: false,
                                             }
                                         }
                                         _ => TerminalTab {
@@ -262,6 +354,11 @@ impl App {
                                             ),
                                             output: String::new(),
                                             structure: Vec::new(),
+                                            ftp: FtpState::default(),
+                                            font_size: 13.0,
+                                            search_active: false,
+                                            search_query: String::new(),
+                                            quick_cmds_visible: false,
                                         },
                                     }
                                 }
@@ -276,6 +373,11 @@ impl App {
                                     relay_error: Some(err.to_string()),
                                     output: String::new(),
                                     structure: Vec::new(),
+                                    ftp: FtpState::default(),
+                                    font_size: 13.0,
+                                    search_active: false,
+                                    search_query: String::new(),
+                                    quick_cmds_visible: false,
                                 },
                             };
 
@@ -294,6 +396,11 @@ impl App {
                                 relay_error: Some(err.to_string()),
                                 output: String::new(),
                                 structure: Vec::new(),
+                                ftp: FtpState::default(),
+                                font_size: 13.0,
+                                search_active: false,
+                                search_query: String::new(),
+                                quick_cmds_visible: false,
                             };
                             self.terminal_tabs.push(tab);
                             self.active_tab = Some(self.terminal_tabs.len() - 1);
@@ -446,8 +553,9 @@ impl App {
                 self.dialog = Some(dialogs::DialogState::Settings(dialogs::SettingsForm {
                     api_key: self.config.api_key.clone().unwrap_or_default(),
                     api_url: self.api_url.clone(),
-                    dark_mode: self.dark_mode,
+                    theme: self.theme,
                     language: self.config.language,
+                    layout: self.config.layout,
                 }));
             }
             Message::SaveSettings => {
@@ -460,9 +568,10 @@ impl App {
                     if !form.api_url.is_empty() {
                         self.api_url = form.api_url.clone();
                     }
-                    self.dark_mode = form.dark_mode;
-                    self.config.dark_mode = form.dark_mode;
+                    self.theme = form.theme;
+                    self.config.theme = form.theme;
                     self.config.language = form.language;
+                    self.config.layout = form.layout;
                     let _ = config::save_config(&self.config);
 
                     // Sync from API if key is set
@@ -475,9 +584,9 @@ impl App {
                 }
                 self.dialog = None;
             }
-            Message::SettingsThemeChanged(dark_mode) => {
+            Message::SettingsThemeChanged(t) => {
                 if let Some(dialogs::DialogState::Settings(ref mut form)) = self.dialog {
-                    form.dark_mode = dark_mode;
+                    form.theme = t;
                 }
             }
             Message::SettingsLanguageChanged(language) => {
@@ -534,8 +643,10 @@ impl App {
                 self.system_info = collect_system_info(&self.sys, &self.disks);
             }
             Message::ToggleTheme => {
-                self.dark_mode = !self.dark_mode;
-                self.config.dark_mode = self.dark_mode;
+                let all = AppTheme::all();
+                let cur = all.iter().position(|&t| t == self.theme).unwrap_or(0);
+                self.theme = all[(cur + 1) % all.len()];
+                self.config.theme = self.theme;
                 let _ = config::save_config(&self.config);
             }
             Message::ToggleLanguage => {
@@ -552,9 +663,300 @@ impl App {
                     }
                 }
             }
+
+            // ── SFTP browser ──────────────────────────────────────────
+            Message::FtpToggleLayout => {
+                let Some(active) = self.active_tab else { return Task::none(); };
+                self.terminal_tabs[active].ftp.layout = match self.terminal_tabs[active].ftp.layout {
+                    FtpLayout::Bottom => FtpLayout::Right,
+                    FtpLayout::Right => FtpLayout::Bottom,
+                };
+            }
+            Message::FtpSearchQueryChanged(q) => {
+                let Some(active) = self.active_tab else { return Task::none(); };
+                self.terminal_tabs[active].ftp.search_query = q;
+            }
+            Message::FtpSearchSubmit => {
+                let Some(active) = self.active_tab else { return Task::none(); };
+                let query = self.terminal_tabs[active].ftp.search_query.clone();
+                if query.trim().is_empty() {
+                    return Task::none();
+                }
+                if let Some(host) = self.terminal_tabs[active].ftp.connected_host.clone() {
+                    let start_path = self.terminal_tabs[active].ftp.current_path.clone();
+                    self.terminal_tabs[active].ftp.searching = true;
+                    self.terminal_tabs[active].ftp.search_results = None;
+                    self.terminal_tabs[active].ftp.notification = None;
+                    return Task::perform(
+                        async move {
+                            tokio::task::spawn_blocking(move || {
+                                ftp::search_files(&host, &start_path, &query)
+                            })
+                            .await
+                            .unwrap_or_else(|e| Err(e.to_string()))
+                        },
+                        Message::FtpSearchResult,
+                    );
+                }
+            }
+            Message::FtpSearchResult(result) => {
+                let Some(active) = self.active_tab else { return Task::none(); };
+                self.terminal_tabs[active].ftp.searching = false;
+                match result {
+                    Ok(entries) => {
+                        self.terminal_tabs[active].ftp.search_results = Some(entries);
+                    }
+                    Err(e) => {
+                        self.terminal_tabs[active].ftp.notification =
+                            Some((format!("Search failed: {}", e), true));
+                    }
+                }
+            }
+            Message::FtpClearSearch => {
+                let Some(active) = self.active_tab else { return Task::none(); };
+                self.terminal_tabs[active].ftp.search_results = None;
+                self.terminal_tabs[active].ftp.search_query = String::new();
+                self.terminal_tabs[active].ftp.searching = false;
+            }
+            Message::FtpToggle => {
+                let Some(active) = self.active_tab else { return Task::none(); };
+                self.terminal_tabs[active].ftp.visible = !self.terminal_tabs[active].ftp.visible;
+                if self.terminal_tabs[active].ftp.visible {
+                    let host = self.terminal_tabs[active].host.clone();
+                    self.terminal_tabs[active].ftp.connected_host = Some(host.clone());
+                    self.terminal_tabs[active].ftp.current_path = "/".to_string();
+                    self.terminal_tabs[active].ftp.loading = true;
+                    self.terminal_tabs[active].ftp.status = FtpStatus::Idle;
+                    let path = "/".to_string();
+                    return Task::perform(
+                        async move {
+                            tokio::task::spawn_blocking(move || ftp::list_directory(&host, &path))
+                                .await
+                                .unwrap_or_else(|e| Err(e.to_string()))
+                        },
+                        Message::FtpListResult,
+                    );
+                } else {
+                    self.terminal_tabs[active].ftp = FtpState::default();
+                }
+            }
+            Message::FtpNavigate(path) => {
+                let Some(active) = self.active_tab else { return Task::none(); };
+                if let Some(host) = self.terminal_tabs[active].ftp.connected_host.clone() {
+                    self.terminal_tabs[active].ftp.loading = true;
+                    self.terminal_tabs[active].ftp.current_path = path.clone();
+                    self.terminal_tabs[active].ftp.notification = None;
+                    return Task::perform(
+                        async move {
+                            tokio::task::spawn_blocking(move || ftp::list_directory(&host, &path))
+                                .await
+                                .unwrap_or_else(|e| Err(e.to_string()))
+                        },
+                        Message::FtpListResult,
+                    );
+                }
+            }
+            Message::FtpRefresh => {
+                let Some(active) = self.active_tab else { return Task::none(); };
+                let path = self.terminal_tabs[active].ftp.current_path.clone();
+                return self.update(Message::FtpNavigate(path));
+            }
+            Message::FtpListResult(result) => {
+                let Some(active) = self.active_tab else { return Task::none(); };
+                self.terminal_tabs[active].ftp.loading = false;
+                match result {
+                    Ok(entries) => {
+                        self.terminal_tabs[active].ftp.entries = entries;
+                        self.terminal_tabs[active].ftp.status = FtpStatus::Idle;
+                    }
+                    Err(e) => {
+                        self.terminal_tabs[active].ftp.status = FtpStatus::Error(e);
+                    }
+                }
+            }
+            Message::FtpEntryClick(path) => {
+                let Some(active) = self.active_tab else { return Task::none(); };
+                let now = std::time::Instant::now();
+                let is_double = self.terminal_tabs[active]
+                    .ftp
+                    .last_click
+                    .as_ref()
+                    .map(|(p, t)| p == &path && now.duration_since(*t).as_millis() < 400)
+                    .unwrap_or(false);
+                if is_double {
+                    self.terminal_tabs[active].ftp.last_click = None;
+                    return self.update(Message::FtpDownloadFile(path));
+                } else {
+                    self.terminal_tabs[active].ftp.last_click = Some((path.clone(), now));
+                    let cmd = format!("nano \"{}\"\r", path);
+                    return self.update(Message::TerminalSendBytes(cmd.into_bytes()));
+                }
+            }
+            Message::FtpDownloadFile(remote_path) => {
+                let Some(active) = self.active_tab else { return Task::none(); };
+                if let Some(host) = self.terminal_tabs[active].ftp.connected_host.clone() {
+                    let file_name = std::path::Path::new(&remote_path)
+                        .file_name()
+                        .map(|n| n.to_string_lossy().to_string())
+                        .unwrap_or_else(|| "file".to_string());
+                    let dl_dir = directories::UserDirs::new()
+                        .and_then(|u| u.download_dir().map(|p| p.to_path_buf()))
+                        .unwrap_or_else(|| std::path::PathBuf::from("."));
+                    let local_path = dl_dir.join(&file_name).to_string_lossy().to_string();
+                    self.terminal_tabs[active].ftp.notification = Some(("Downloading...".to_string(), false));
+                    return Task::perform(
+                        async move {
+                            tokio::task::spawn_blocking(move || {
+                                ftp::download_file(&host, &remote_path, &local_path)
+                                    .map(|_| local_path)
+                            })
+                            .await
+                            .unwrap_or_else(|e| Err(e.to_string()))
+                        },
+                        Message::FtpDownloadResult,
+                    );
+                }
+            }
+            Message::FtpDownloadResult(result) => {
+                let Some(active) = self.active_tab else { return Task::none(); };
+                match result {
+                    Ok(path) => {
+                        self.terminal_tabs[active].ftp.notification =
+                            Some((format!("Downloaded → {}", path), false));
+                    }
+                    Err(e) => {
+                        self.terminal_tabs[active].ftp.notification =
+                            Some((format!("Download failed: {}", e), true));
+                    }
+                }
+            }
+            Message::FtpPickUploadFile => {
+                return Task::perform(
+                    async {
+                        tokio::task::spawn_blocking(|| {
+                            rfd::FileDialog::new()
+                                .set_title("Select File to Upload")
+                                .pick_file()
+                        })
+                        .await
+                        .ok()
+                        .flatten()
+                    },
+                    Message::FtpUploadChosen,
+                );
+            }
+            Message::FtpUploadChosen(maybe_path) => {
+                let Some(active) = self.active_tab else { return Task::none(); };
+                if let Some(local) = maybe_path {
+                    if let Some(host) = self.terminal_tabs[active].ftp.connected_host.clone() {
+                        let local_str = local.to_string_lossy().to_string();
+                        let file_name = local
+                            .file_name()
+                            .map(|n| n.to_string_lossy().to_string())
+                            .unwrap_or_else(|| "upload".to_string());
+                        let remote_path = format!(
+                            "{}/{}",
+                            self.terminal_tabs[active].ftp.current_path.trim_end_matches('/'),
+                            file_name
+                        );
+                        self.terminal_tabs[active].ftp.notification =
+                            Some(("Uploading...".to_string(), false));
+                        return Task::perform(
+                            async move {
+                                tokio::task::spawn_blocking(move || {
+                                    ftp::upload_file(&host, &local_str, &remote_path)
+                                })
+                                .await
+                                .unwrap_or_else(|e| Err(e.to_string()))
+                            },
+                            Message::FtpUploadResult,
+                        );
+                    }
+                }
+            }
+            Message::FtpUploadResult(result) => {
+                let Some(active) = self.active_tab else { return Task::none(); };
+                match result {
+                    Ok(_) => {
+                        self.terminal_tabs[active].ftp.notification =
+                            Some(("Upload complete".to_string(), false));
+                        let path = self.terminal_tabs[active].ftp.current_path.clone();
+                        return self.update(Message::FtpNavigate(path));
+                    }
+                    Err(e) => {
+                        self.terminal_tabs[active].ftp.notification =
+                            Some((format!("Upload failed: {}", e), true));
+                    }
+                }
+            }
+            // ── Terminal UX features ──────────────────────────────────────
+            Message::TerminalFontSizeInc => {
+                let Some(i) = self.active_tab else { return Task::none(); };
+                self.terminal_tabs[i].font_size = (self.terminal_tabs[i].font_size + 1.0).min(28.0);
+            }
+            Message::TerminalFontSizeDec => {
+                let Some(i) = self.active_tab else { return Task::none(); };
+                self.terminal_tabs[i].font_size = (self.terminal_tabs[i].font_size - 1.0).max(8.0);
+            }
+            Message::TerminalFontSizeReset => {
+                let Some(i) = self.active_tab else { return Task::none(); };
+                self.terminal_tabs[i].font_size = 13.0;
+            }
+            Message::TerminalSearchToggle => {
+                let Some(i) = self.active_tab else { return Task::none(); };
+                let was = self.terminal_tabs[i].search_active;
+                self.terminal_tabs[i].search_active = !was;
+                if was {
+                    self.terminal_tabs[i].search_query.clear();
+                }
+            }
+            Message::TerminalSearchChanged(q) => {
+                let Some(i) = self.active_tab else { return Task::none(); };
+                self.terminal_tabs[i].search_query = q;
+            }
+            Message::TerminalSearchClose => {
+                let Some(i) = self.active_tab else { return Task::none(); };
+                self.terminal_tabs[i].search_active = false;
+                self.terminal_tabs[i].search_query.clear();
+            }
+            Message::TerminalQuickCmdsToggle => {
+                let Some(i) = self.active_tab else { return Task::none(); };
+                let v = self.terminal_tabs[i].quick_cmds_visible;
+                self.terminal_tabs[i].quick_cmds_visible = !v;
+            }
+            Message::TerminalQuickCmd(cmd) => {
+                return self.update(Message::TerminalSendBytes(cmd.into_bytes()));
+            }
+            Message::SettingsLayoutChanged(preset) => {
+                if let Some(dialogs::DialogState::Settings(ref mut form)) = self.dialog {
+                    form.layout = preset;
+                }
+            }
             Message::TerminalKeyPressed(key, modifiers) => {
                 if self.dialog.is_some() {
                     return Task::none();
+                }
+                // Intercept terminal shortcuts before passing to SSH
+                if modifiers.control() {
+                    if let Key::Character(ref c) = key {
+                        match c.as_str() {
+                            "f" => return self.update(Message::TerminalSearchToggle),
+                            "=" | "+" => return self.update(Message::TerminalFontSizeInc),
+                            "-" => return self.update(Message::TerminalFontSizeDec),
+                            "0" => return self.update(Message::TerminalFontSizeReset),
+                            _ => {}
+                        }
+                    }
+                }
+                // Esc → close search
+                if matches!(key, Key::Named(Named::Escape)) {
+                    let searching = self.active_tab
+                        .and_then(|i| self.terminal_tabs.get(i))
+                        .map(|t| t.search_active)
+                        .unwrap_or(false);
+                    if searching {
+                        return self.update(Message::TerminalSearchClose);
+                    }
                 }
                 if let Some(bytes) = map_key_to_bytes(key, modifiers) {
                     return self.update(Message::TerminalSendBytes(bytes));
@@ -686,10 +1088,11 @@ impl App {
 
     pub fn view(&self) -> Element<'_, Message> {
         let texts = Texts::get(self.config.language);
-        let p = theme::palette(self.dark_mode);
+        let p = theme::palette(self.theme);
+        let lc = theme::layout(self.config.layout);
 
-        let toolbar_view = toolbar::view(&texts, self.dark_mode);
-        let tab_bar_view = tab_bar::view(&self.terminal_tabs, self.active_tab, self.dark_mode);
+        let toolbar_view = toolbar::view(&texts, self.theme, lc);
+        let tab_bar_view = tab_bar::view(&self.terminal_tabs, self.active_tab, self.theme, lc);
         let structure: &[String] = self
             .active_tab
             .and_then(|i| self.terminal_tabs.get(i))
@@ -703,25 +1106,29 @@ impl App {
             &self.ping_results,
             &self.system_info,
             structure,
-            self.dark_mode,
+            self.theme,
+            lc,
         );
         let status_view = status_bar::view(
             &texts,
             self.config.api_key.is_some(),
             self.config.language,
-            self.dark_mode,
+            self.theme,
+            lc,
         );
 
-        let main_area = self.view_main_area(&texts);
+        let main_area = self.view_main_area(&texts, lc);
 
+        let pg = lc.panel_gap;
+        let cp = lc.container_padding;
         let content = column![
             toolbar_view,
             tab_bar_view,
-            row![sidebar_view, main_area].spacing(theme::PANEL_GAP),
+            row![sidebar_view, main_area].spacing(pg).height(Length::Fill),
             status_view,
         ]
-        .spacing(theme::PANEL_GAP)
-        .padding(10);
+        .spacing(pg)
+        .padding(cp);
 
         let base: Element<'_, Message> = container(content)
             .width(Length::Fill)
@@ -733,72 +1140,62 @@ impl App {
             .into();
 
         if let Some(ref dialog_state) = self.dialog {
-            let dialog_overlay = dialogs::view_dialog(&texts, dialog_state, self.dark_mode);
+            let dialog_overlay = dialogs::view_dialog(&texts, dialog_state, self.theme, lc);
             iced::widget::stack![base, dialog_overlay].into()
         } else {
             base
         }
     }
 
-    fn view_main_area(&self, texts: &Texts) -> Element<'_, Message> {
-        let p = theme::palette(self.dark_mode);
+    fn view_main_area(&self, texts: &Texts, lc: theme::LayoutConfig) -> Element<'_, Message> {
+        let p = theme::palette(self.theme);
+        let cr = lc.corner_radius;
 
         if let Some(active) = self.active_tab {
             if let Some(tab) = self.terminal_tabs.get(active) {
                 let status_text = if tab.connected { "connected" } else { "disconnected" };
                 let status_color = if tab.connected { p.success } else { p.danger };
 
-                let relay_path = tab
-                    .ssh_process
-                    .as_ref()
-                    .map(|proc| proc.relay_path.as_str())
-                    .unwrap_or("not available");
-
-                let top_bar = row![
-                    text(format!(
-                        "{}@{}:{}  |  {}",
-                        tab.host.username, tab.host.hostname, tab.host.port, status_text
+                // Build top_bar with optional layout-toggle button (top-right)
+                let mut top_bar_row = iced::widget::Row::new()
+                    .spacing(4)
+                    .align_y(iced::Alignment::Center);
+                top_bar_row = top_bar_row
+                    .push(
+                        text(format!(
+                            "{}@{}:{}",
+                            tab.host.username, tab.host.hostname, tab.host.port
+                        ))
+                        .size(11)
+                        .color(p.text_muted),
+                    )
+                    .push(text(format!("  ·  {}", status_text)).size(11).color(status_color))
+                    .push(iced::widget::horizontal_space());
+                if tab.ftp.visible {
+                    let layout_label = match tab.ftp.layout {
+                        FtpLayout::Bottom => "Right Side",  // switch to Right
+                        FtpLayout::Right  => "Bottom Side",  // switch to Bottom
+                    };
+                    top_bar_row =
+                        top_bar_row.push(terminal_action_button(layout_label, Message::FtpToggleLayout, p));
+                }
+                top_bar_row = top_bar_row
+                    .push(terminal_action_button(
+                        if tab.quick_cmds_visible { "CMD ●" } else { "CMD" },
+                        Message::TerminalQuickCmdsToggle, p,
                     ))
-                    .size(12)
-                    .color(status_color),
-                    iced::widget::horizontal_space(),
-                    button(text("Ctrl+C").size(11).color(p.text_primary))
-                        .on_press(Message::TerminalSendCtrlC)
-                        .padding([4, 10])
-                        .style(move |_t: &iced::Theme, status: button::Status| button::Style {
-                            background: Some(iced::Background::Color(match status {
-                                button::Status::Hovered => p.bg_hover,
-                                _ => p.bg_tertiary,
-                            })),
-                            text_color: p.text_primary,
-                            border: iced::Border {
-                                color: p.border,
-                                width: 1.0,
-                                radius: theme::CORNER_RADIUS.into(),
-                            },
-                            ..Default::default()
-                        }),
-                    button(text("Clear").size(11).color(p.text_primary))
-                        .on_press(Message::TerminalClear)
-                        .padding([4, 10])
-                        .style(move |_t: &iced::Theme, status: button::Status| button::Style {
-                            background: Some(iced::Background::Color(match status {
-                                button::Status::Hovered => p.bg_hover,
-                                _ => p.bg_tertiary,
-                            })),
-                            text_color: p.text_primary,
-                            border: iced::Border {
-                                color: p.border,
-                                width: 1.0,
-                                radius: theme::CORNER_RADIUS.into(),
-                            },
-                            ..Default::default()
-                        }),
-                ]
-                .spacing(8)
-                .align_y(iced::Alignment::Center);
+                    .push(terminal_action_button(
+                        if tab.search_active { "⌕ ●" } else { "⌕" },
+                        Message::TerminalSearchToggle, p,
+                    ))
+                    .push(terminal_action_button("A-", Message::TerminalFontSizeDec, p))
+                    .push(terminal_action_button("A+", Message::TerminalFontSizeInc, p))
+                    .push(terminal_action_button("^C", Message::TerminalSendCtrlC, p))
+                    .push(terminal_action_button("Clear", Message::TerminalClear, p));
+                let top_bar = top_bar_row;
 
-                let terminal_spans = self
+                // Terminal spans — with optional search highlight
+                let raw_spans = self
                     .terminal_runtime
                     .get(&tab.id)
                     .map(|rt| build_terminal_spans(rt, p.text_primary))
@@ -810,66 +1207,183 @@ impl App {
                         };
                         vec![iced::widget::text::Span::new(fallback)]
                     });
+
+                let (terminal_spans, match_count) = if tab.search_active
+                    && !tab.search_query.is_empty()
+                {
+                    apply_search_highlight(
+                        raw_spans,
+                        &tab.search_query,
+                        iced::Color::from_rgb(1.0, 0.85, 0.0),
+                        p.text_primary,
+                    )
+                } else {
+                    (raw_spans, 0)
+                };
+
                 let in_alternate_screen = self
                     .terminal_runtime
                     .get(&tab.id)
                     .map(|rt| rt.parser.screen().alternate_screen())
                     .unwrap_or(false);
 
+                let font_sz = tab.font_size;
                 let terminal_view = container(
                     scrollable(
                         rich_text(terminal_spans)
-                            .size(13)
+                            .size(font_sz)
                             .font(Font::MONOSPACE)
                             .wrapping(iced::widget::text::Wrapping::None)
-                            .width(Length::Fill)
+                            .width(Length::Fill),
                     )
                     .id(self.terminal_scroll_id.clone())
                     .style(hidden_scrollbar_style)
                     .height(Length::Fill),
                 )
-                .padding(10)
+                .padding([8, 10])
                 .width(Length::Fill)
                 .height(Length::Fill)
                 .style(move |_t: &iced::Theme| container::Style {
                     background: Some(iced::Background::Color(p.bg_secondary)),
-                    border: iced::Border {
-                        color: p.border,
-                        width: 1.0,
-                        radius: theme::CORNER_RADIUS.into(),
-                    },
+                    border: iced::Border::default(),
                     ..Default::default()
                 });
 
+                // Build panel incrementally for conditional bars
                 let mut panel = if in_alternate_screen {
-                    column![terminal_view].spacing(0).height(Length::Fill)
+                    Column::new().spacing(0).height(Length::Fill)
                 } else {
-                    column![
-                        top_bar,
-                        terminal_view,
-                    ]
-                    .spacing(8)
-                    .height(Length::Fill)
+                    Column::new().spacing(4).height(Length::Fill).push(top_bar)
                 };
 
-                if let Some(err) = &tab.relay_error {
-                    panel = panel.push(text(format!("Relay error: {}", err)).size(11).color(p.danger));
+                // Quick commands bar
+                if tab.quick_cmds_visible && !in_alternate_screen {
+                    let mut cmd_row = iced::widget::Row::new()
+                        .spacing(3)
+                        .padding([2, 6])
+                        .align_y(Alignment::Center);
+                    for (label, cmd) in QUICK_CMDS {
+                        let cmd_str = (*cmd).to_string();
+                        cmd_row = cmd_row.push(
+                            button(text(*label).size(10).color(p.text_secondary))
+                                .on_press(Message::TerminalQuickCmd(cmd_str))
+                                .padding([2, 7])
+                                .style(move |_: &iced::Theme, s: button::Status| button::Style {
+                                    background: Some(iced::Background::Color(match s {
+                                        button::Status::Hovered => p.bg_hover,
+                                        _ => p.bg_tertiary,
+                                    })),
+                                    text_color: p.text_secondary,
+                                    border: iced::Border {
+                                        color: p.border,
+                                        width: 1.0,
+                                        radius: cr.into(),
+                                    },
+                                    ..Default::default()
+                                }),
+                        );
+                    }
+                    let qc_bar = container(cmd_row)
+                        .width(Length::Fill)
+                        .padding([0, 2])
+                        .style(move |_: &iced::Theme| container::Style {
+                            background: Some(iced::Background::Color(p.bg_tertiary)),
+                            border: iced::Border { color: p.border, width: 1.0, radius: cr.into() },
+                            ..Default::default()
+                        });
+                    panel = panel.push(qc_bar);
                 }
 
-                return container(panel)
-                    .padding(12)
+                // Search bar
+                if tab.search_active && !in_alternate_screen {
+                    let sq = tab.search_query.clone();
+                    let mc = match_count;
+                    let match_text = if sq.is_empty() {
+                        "type to search".to_string()
+                    } else {
+                        format!("{} match{}", mc, if mc == 1 { "" } else { "es" })
+                    };
+                    let search_bar = container(
+                        row![
+                            text_input("Search terminal... (Ctrl+F, Esc)", &sq)
+                                .on_input(Message::TerminalSearchChanged)
+                                .on_submit(Message::TerminalSearchClose)
+                                .padding([3, 6])
+                                .size(11)
+                                .width(Length::Fill)
+                                .style(move |_: &iced::Theme, st: text_input::Status| {
+                                    text_input::Style {
+                                        background: iced::Background::Color(p.bg_primary),
+                                        border: iced::Border {
+                                            color: match st {
+                                                text_input::Status::Focused => p.border_focused,
+                                                _ => p.border,
+                                            },
+                                            width: 1.0,
+                                            radius: cr.into(),
+                                        },
+                                        icon: p.text_muted,
+                                        placeholder: p.text_muted,
+                                        value: p.text_primary,
+                                        selection: p.accent,
+                                    }
+                                }),
+                            text(match_text).size(10).color(p.text_muted),
+                            terminal_action_button("✕", Message::TerminalSearchClose, p),
+                        ]
+                        .spacing(6)
+                        .align_y(Alignment::Center),
+                    )
+                    .width(Length::Fill)
+                    .padding([3, 6])
+                    .style(move |_: &iced::Theme| container::Style {
+                        background: Some(iced::Background::Color(p.bg_tertiary)),
+                        border: iced::Border { color: p.accent, width: 1.0, radius: cr.into() },
+                        ..Default::default()
+                    });
+                    panel = panel.push(search_bar);
+                }
+
+                panel = panel.push(terminal_view);
+
+                if let Some(err) = &tab.relay_error {
+                    panel = panel.push(text(format!("⚠ {}", err)).size(10).color(p.danger));
+                }
+
+                // Terminal container block
+                let ftp_theme = self.theme;
+                let terminal_block = container(panel)
+                    .padding([8, 10])
                     .width(Length::Fill)
                     .height(Length::Fill)
-                    .style(move |_t: &iced::Theme| container::Style {
+                    .style(move |_: &iced::Theme| container::Style {
                         background: Some(iced::Background::Color(p.bg_secondary)),
                         border: iced::Border {
                             color: p.border,
                             width: 1.0,
-                            radius: theme::CORNER_RADIUS.into(),
+                            radius: cr.into(),
                         },
                         ..Default::default()
-                    })
-                    .into();
+                    });
+
+                // Attach FTP panel — position depends on tab.ftp.layout
+                let pg = lc.panel_gap;
+                let main_content: Element<'_, Message> = if tab.ftp.visible {
+                    let ftp_view = ftp_panel::view(&tab.ftp, ftp_theme, lc);
+                    match tab.ftp.layout {
+                        FtpLayout::Bottom => column![terminal_block, ftp_view]
+                            .spacing(pg)
+                            .height(Length::Fill)
+                            .into(),
+                        FtpLayout::Right => row![terminal_block, ftp_view]
+                            .spacing(pg)
+                            .height(Length::Fill)
+                            .into(),
+                    }
+                } else {
+                    terminal_block.into()
+                };
+                return main_content;
             }
         }
 
@@ -877,13 +1391,13 @@ impl App {
     }
 
     fn view_welcome(&self, texts: &Texts) -> Element<'_, Message> {
-        let p = theme::palette(self.dark_mode);
+        let p = theme::palette(self.theme);
         container(
             column![
-                text("Termissh Organization").size(32).color(p.accent),
-                text(texts.welcome_msg).size(14).color(p.text_secondary),
+                text("termissh").size(20).color(p.accent),
+                text(texts.welcome_msg).size(12).color(p.text_muted),
             ]
-            .spacing(10)
+            .spacing(8)
             .align_x(iced::Alignment::Center),
         )
         .width(Length::Fill)
@@ -903,10 +1417,10 @@ impl App {
     }
 
     pub fn theme(&self) -> iced::Theme {
-        if self.dark_mode {
-            iced::Theme::Dark
-        } else {
+        if self.theme.is_light() {
             iced::Theme::Light
+        } else {
+            iced::Theme::Dark
         }
     }
 
@@ -1125,6 +1639,102 @@ fn ansi_index_to_color(idx: u8) -> iced::Color {
     iced::Color::from_rgb8(gray, gray, gray)
 }
 
+// ─── Quick commands ────────────────────────────────────────────────────────
+const QUICK_CMDS: &[(&str, &str)] = &[
+    ("ls",      "ls -la\r"),
+    ("pwd",     "pwd\r"),
+    ("df",      "df -h\r"),
+    ("free",    "free -h\r"),
+    ("top",     "top\r"),
+    ("ps",      "ps aux --sort=-%cpu | head -20\r"),
+    ("hist",    "history | tail -30\r"),
+    ("who",     "who\r"),
+    ("uptime",  "uptime\r"),
+    ("net",     "ss -tuln\r"),
+    ("env",     "env | sort\r"),
+    ("disk",    "du -sh * 2>/dev/null | sort -rh | head -20\r"),
+];
+
+// ─── Search highlight ──────────────────────────────────────────────────────
+fn apply_search_highlight(
+    spans: Vec<iced::widget::text::Span<'static, Message>>,
+    query: &str,
+    highlight_color: iced::Color,
+    default_color: iced::Color,
+) -> (Vec<iced::widget::text::Span<'static, Message>>, usize) {
+    if query.is_empty() {
+        return (spans, 0);
+    }
+    let ql = query.to_lowercase();
+    let mut result = Vec::new();
+    let mut count = 0;
+
+    for span in spans {
+        let text = span.text.as_ref().to_string();
+        let tl = text.to_lowercase();
+        let base_color = span.color.unwrap_or(default_color);
+
+        if !tl.contains(ql.as_str()) {
+            result.push(span);
+            continue;
+        }
+
+        let mut pos = 0;
+        while pos < text.len() {
+            match tl[pos..].find(ql.as_str()) {
+                Some(rel) => {
+                    let abs = pos + rel;
+                    let end = abs + ql.len();
+                    // Safety: only slice on valid char boundaries
+                    if !text.is_char_boundary(abs) || !text.is_char_boundary(end) || end > text.len() {
+                        result.push(iced::widget::text::Span::new(text[pos..].to_string()).color(base_color));
+                        break;
+                    }
+                    if abs > pos {
+                        result.push(iced::widget::text::Span::new(text[pos..abs].to_string()).color(base_color));
+                    }
+                    result.push(iced::widget::text::Span::new(text[abs..end].to_string()).color(highlight_color));
+                    count += 1;
+                    pos = end;
+                }
+                None => {
+                    if pos < text.len() {
+                        result.push(iced::widget::text::Span::new(text[pos..].to_string()).color(base_color));
+                    }
+                    break;
+                }
+            }
+        }
+    }
+
+    (result, count)
+}
+
+fn terminal_action_button(
+    label: &'static str,
+    msg: Message,
+    p: theme::Palette,
+) -> iced::widget::Button<'static, Message> {
+    button(text(label).size(10).color(p.text_secondary))
+        .on_press(msg)
+        .padding([2, 8])
+        .style(move |_t: &iced::Theme, status: button::Status| button::Style {
+            background: Some(iced::Background::Color(match status {
+                button::Status::Hovered => p.bg_hover,
+                _ => iced::Color::TRANSPARENT,
+            })),
+            text_color: match status {
+                button::Status::Hovered => p.text_primary,
+                _ => p.text_secondary,
+            },
+            border: iced::Border {
+                radius: theme::CORNER_RADIUS.into(),
+                ..Default::default()
+            },
+            ..Default::default()
+        })
+}
+
 fn normalized_screen(screen: &str) -> String {
     let mut out = String::new();
     for (line_idx, line) in screen.lines().enumerate() {
@@ -1299,4 +1909,3 @@ fn collect_system_info(sys: &System, disks: &Disks) -> LocalSystemInfo {
         uptime_secs,
     }
 }
-

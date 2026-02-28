@@ -20,13 +20,19 @@ fn main() {
 
 fn generate_ico(png_path: &str, ico_path: &Path) -> Result<(), Box<dyn Error>> {
     let image = image::open(png_path)?.into_rgba8();
-    let (width, height) = image.dimensions();
-
-    let icon_image = ico::IconImage::from_rgba_data(width, height, image.into_raw());
-    let icon_entry = ico::IconDirEntry::encode(&icon_image)?;
-
     let mut icon_dir = ico::IconDir::new(ico::ResourceType::Icon);
-    icon_dir.add_entry(icon_entry);
+
+    for &size in &[16u32, 32, 48, 256] {
+        let resized = image::imageops::resize(
+            &image,
+            size,
+            size,
+            image::imageops::FilterType::Lanczos3,
+        );
+        let icon_image = ico::IconImage::from_rgba_data(size, size, resized.into_raw());
+        let icon_entry = ico::IconDirEntry::encode(&icon_image)?;
+        icon_dir.add_entry(icon_entry);
+    }
 
     let mut file = File::create(ico_path)?;
     icon_dir.write(&mut file)?;

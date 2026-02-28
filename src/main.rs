@@ -3,6 +3,7 @@
 mod api;
 mod app;
 mod config;
+mod ftp;
 mod i18n;
 mod terminal;
 mod theme;

@@ -1,7 +1,13 @@
+use aes_gcm::{
+    aead::{Aead, KeyInit},
+    Aes256Gcm, Nonce,
+};
 use anyhow::{Context, Result};
 use directories::ProjectDirs;
 use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
 use std::fs;
+use std::time::{SystemTime, UNIX_EPOCH};
 
 #[derive(Serialize, Deserialize, Clone, Debug)]
 pub struct Host {
@@ -27,42 +33,185 @@ impl Default for Host {
     }
 }
 
-#[derive(Serialize, Deserialize, Clone, Copy, Debug, PartialEq)]
+#[derive(Serialize, Deserialize, Clone, Copy, Debug, PartialEq, Default)]
 pub enum Language {
     Turkish,
+    #[default]
     English,
 }
 
-impl Default for Language {
-    fn default() -> Self {
-        Language::Turkish
+#[derive(Serialize, Deserialize, Clone, Copy, Debug, PartialEq, Default)]
+pub enum AppTheme {
+    #[default]
+    Dark,
+    Light,
+    Dracula,
+    Nord,
+    Solarized,
+    MonoDark,
+    MonoLight,
+    Haki,
+    SoftRose,
+    SoftSky,
+}
+
+impl AppTheme {
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Dark => "Dark",
+            Self::Light => "Light",
+            Self::Dracula => "Dracula",
+            Self::Nord => "Nord",
+            Self::Solarized => "Solarized",
+            Self::MonoDark => "Mono Dark",
+            Self::MonoLight => "Mono Light",
+            Self::Haki => "Haki",
+            Self::SoftRose => "Soft Rose",
+            Self::SoftSky => "Soft Sky",
+        }
+    }
+
+    pub fn all() -> &'static [AppTheme] {
+        &[
+            Self::Dark,
+            Self::Light,
+            Self::Dracula,
+            Self::Nord,
+            Self::Solarized,
+            Self::MonoDark,
+            Self::MonoLight,
+            Self::Haki,
+            Self::SoftRose,
+            Self::SoftSky,
+        ]
+    }
+
+    pub fn is_light(self) -> bool {
+        matches!(self, Self::Light | Self::MonoLight)
     }
 }
 
-fn default_dark_mode() -> bool {
-    true
+impl std::fmt::Display for AppTheme {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", self.label())
+    }
 }
 
-#[derive(Serialize, Deserialize, Clone, Debug)]
+#[derive(Serialize, Deserialize, Clone, Copy, Debug, PartialEq, Default)]
+pub enum LayoutPreset {
+    #[default]
+    Vega,   // clean & familiar (shadcn/ui-like)
+    Nova,   // compact
+    Maia,   // soft & rounded
+    Lyra,   // boxy & sharp
+    Mira,   // ultra dense
+}
+
+impl LayoutPreset {
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Vega => "Vega",
+            Self::Nova => "Nova",
+            Self::Maia => "Maia",
+            Self::Lyra => "Lyra",
+            Self::Mira => "Mira",
+        }
+    }
+
+    pub fn description(self) -> &'static str {
+        match self {
+            Self::Vega => "Clean, neutral & familiar",
+            Self::Nova => "Reduced padding, compact",
+            Self::Maia => "Soft & rounded, generous",
+            Self::Lyra => "Boxy & sharp, mono-friendly",
+            Self::Mira => "Ultra dense, minimal space",
+        }
+    }
+
+    pub fn all() -> &'static [LayoutPreset] {
+        &[Self::Vega, Self::Nova, Self::Maia, Self::Lyra, Self::Mira]
+    }
+}
+
+impl std::fmt::Display for LayoutPreset {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}  ·  {}", self.label(), self.description())
+    }
+}
+
+#[derive(Serialize, Deserialize, Clone, Debug, Default)]
 pub struct AppConfig {
     pub hosts: Vec<Host>,
     pub api_key: Option<String>,
     #[serde(default)]
     pub language: Language,
-    #[serde(default = "default_dark_mode")]
-    pub dark_mode: bool,
+    #[serde(default)]
+    pub theme: AppTheme,
+    #[serde(default)]
+    pub layout: LayoutPreset,
 }
 
-impl Default for AppConfig {
-    fn default() -> Self {
-        Self {
-            hosts: Vec::new(),
-            api_key: None,
-            language: Language::default(),
-            dark_mode: default_dark_mode(),
-        }
-    }
+// --- Encryption helpers ---
+
+fn derive_key() -> [u8; 32] {
+    let machine_id = std::env::var("COMPUTERNAME")
+        .or_else(|_| std::env::var("HOSTNAME"))
+        .unwrap_or_else(|_| "termissh-default".to_string());
+    let input = format!("{}::termissh-cipher-v1", machine_id);
+    let hash = Sha256::digest(input.as_bytes());
+    hash.into()
 }
+
+fn nonce_from_time() -> [u8; 12] {
+    let now = SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default();
+    let mut n = [0u8; 12];
+    n[0..8].copy_from_slice(&now.as_secs().to_le_bytes());
+    n[8..12].copy_from_slice(&now.subsec_nanos().to_le_bytes());
+    n
+}
+
+fn bytes_to_hex(b: &[u8]) -> String {
+    b.iter().map(|x| format!("{:02x}", x)).collect()
+}
+
+fn hex_to_bytes(s: &str) -> Option<Vec<u8>> {
+    if s.len() % 2 != 0 {
+        return None;
+    }
+    (0..s.len())
+        .step_by(2)
+        .map(|i| u8::from_str_radix(&s[i..i + 2], 16).ok())
+        .collect()
+}
+
+fn encrypt_config(config: &AppConfig) -> Result<String> {
+    let key_bytes = derive_key();
+    let cipher = Aes256Gcm::new_from_slice(&key_bytes)?;
+    let nonce_bytes = nonce_from_time();
+    let nonce = Nonce::from_slice(&nonce_bytes);
+    let plaintext = serde_json::to_vec(config)?;
+    let ciphertext = cipher
+        .encrypt(nonce, plaintext.as_ref())
+        .map_err(|e| anyhow::anyhow!("encryption failed: {}", e))?;
+    let mut combined = nonce_bytes.to_vec();
+    combined.extend_from_slice(&ciphertext);
+    Ok(bytes_to_hex(&combined))
+}
+
+fn decrypt_config(hex: &str) -> Result<AppConfig> {
+    let bytes = hex_to_bytes(hex.trim()).context("invalid hex in config")?;
+    anyhow::ensure!(bytes.len() > 12, "config data too short");
+    let (nonce_bytes, ciphertext) = bytes.split_at(12);
+    let key_bytes = derive_key();
+    let cipher = Aes256Gcm::new_from_slice(&key_bytes)?;
+    let nonce = Nonce::from_slice(nonce_bytes);
+    let plaintext = cipher
+        .decrypt(nonce, ciphertext)
+        .map_err(|e| anyhow::anyhow!("decryption failed: {}", e))?;
+    Ok(serde_json::from_slice(&plaintext)?)
+}
+
+// --- Config path ---
 
 fn config_path() -> Result<std::path::PathBuf> {
     let proj = ProjectDirs::from("com", "termissh", "manager")
@@ -71,28 +220,44 @@ fn config_path() -> Result<std::path::PathBuf> {
     if !dir.exists() {
         fs::create_dir_all(dir)?;
     }
-    Ok(dir.join("config.json"))
+    Ok(dir.join("config.enc"))
 }
 
+fn legacy_config_path() -> Option<std::path::PathBuf> {
+    let proj = ProjectDirs::from("com", "termissh", "manager")?;
+    let path = proj.config_dir().join("config.json");
+    if path.exists() { Some(path) } else { None }
+}
+
+// --- Public API ---
+
 pub fn load_config() -> AppConfig {
-    match config_path() {
-        Ok(path) => {
-            if path.exists() {
-                match fs::read_to_string(&path) {
-                    Ok(data) => serde_json::from_str(&data).unwrap_or_default(),
-                    Err(_) => AppConfig::default(),
+    // 1. Try encrypted file
+    if let Ok(path) = config_path() {
+        if path.exists() {
+            if let Ok(data) = fs::read_to_string(&path) {
+                if let Ok(cfg) = decrypt_config(&data) {
+                    return cfg;
                 }
-            } else {
-                AppConfig::default()
             }
         }
-        Err(_) => AppConfig::default(),
     }
+    // 2. Migrate from legacy plain-text JSON
+    if let Some(legacy) = legacy_config_path() {
+        if let Ok(data) = fs::read_to_string(&legacy) {
+            let cfg: AppConfig = serde_json::from_str(&data).unwrap_or_default();
+            // Save encrypted version and remove legacy file
+            let _ = save_config(&cfg);
+            let _ = fs::remove_file(legacy);
+            return cfg;
+        }
+    }
+    AppConfig::default()
 }
 
 pub fn save_config(config: &AppConfig) -> Result<()> {
     let path = config_path()?;
-    let data = serde_json::to_string_pretty(config)?;
-    fs::write(path, data)?;
+    let encrypted = encrypt_config(config)?;
+    fs::write(path, encrypted)?;
     Ok(())
 }

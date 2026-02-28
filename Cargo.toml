@@ -1,6 +1,6 @@
 [package]
 name = "termissh"
-version = "0.2.0"
+version = "0.2.3"
 edition = "2021"
 
 [[bin]]
@@ -28,6 +28,9 @@ crossterm = "0.28"
 ratatui = "0.29"
 lazy_static = "1.5"
 vt100 = "0.15"
+aes-gcm = "0.10"
+sha2 = "0.10"
+rfd = "0.15"
 
 [target.'cfg(target_env = "musl")'.dependencies]
 openssl = { version = "0.10", features = ["vendored"] }
