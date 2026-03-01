@@ -96,13 +96,20 @@ pub fn layout(preset: LayoutPreset) -> LayoutConfig {
             spacing: 10.0,
         },
         LayoutPreset::Flux => LayoutConfig {
-            // Floating panels with large breathing room
             corner_radius: 12.0,
             panel_gap: 12.0,
             sidebar_width: 205.0,
             container_padding: 12,
             element_padding: 8,
             spacing: 8.0,
+        },
+        LayoutPreset::NoRound => LayoutConfig {
+            corner_radius: 0.0,
+            panel_gap: 0.0,
+            sidebar_width: 205.0,
+            container_padding: 0,
+            element_padding: 0,
+            spacing: 0.0,
         },
     }
 }
@@ -129,22 +136,26 @@ pub struct Palette {
 pub fn palette(theme: AppTheme) -> Palette {
     match theme {
         AppTheme::Dark => Palette {
-            // GitHub-inspired clean dark
-            bg_primary:     Color::from_rgb8(13,  17,  23),
-            bg_secondary:   Color::from_rgb8(22,  27,  34),
-            bg_tertiary:    Color::from_rgb8(33,  38,  45),
-            bg_hover:       Color::from_rgb8(48,  54,  61),
-            bg_active:      Color::from_rgb8(33,  81, 140),
-            text_primary:   Color::from_rgb8(230, 237, 243),
-            text_secondary: Color::from_rgb8(139, 148, 158),
-            text_muted:     Color::from_rgb8(80,  88,  96),
-            accent:         Color::from_rgb8(88,  166, 255),
-            accent_hover:   Color::from_rgb8(121, 184, 255),
-            success:        Color::from_rgb8(63,  185, 80),
-            warning:        Color::from_rgb8(210, 153, 34),
-            danger:         Color::from_rgb8(248, 81,  73),
-            border:         Color::from_rgb8(48,  54,  61),
-            border_focused: Color::from_rgb8(88,  166, 255),
+            // Deep Neutral Dark – Soft Contrast, Premium Feel
+            bg_primary:     Color::from_rgb8(9,  11,  15),   // Daha derin ama siyah değil
+            bg_secondary:   Color::from_rgb8(14, 17, 22),
+            bg_tertiary:    Color::from_rgb8(20, 24, 30),
+            bg_hover:       Color::from_rgb8(28, 34, 42),
+            bg_active:      Color::from_rgb8(40, 65, 105),   // Patlamayan koyu mavi
+
+            text_primary:   Color::from_rgb8(228, 232, 240),
+            text_secondary: Color::from_rgb8(160, 168, 178),
+            text_muted:     Color::from_rgb8(105, 115, 125),
+
+            accent:         Color::from_rgb8(102, 168, 255), // Daha soft mavi
+            accent_hover:   Color::from_rgb8(125, 185, 255),
+
+            success:        Color::from_rgb8(46, 160, 67),   // Daha natural green
+            warning:        Color::from_rgb8(201, 140, 0),
+            danger:         Color::from_rgb8(218, 54, 51),
+
+            border:         Color::from_rgb8(32, 38, 46),
+            border_focused: Color::from_rgb8(102, 168, 255),
         },
 
         AppTheme::Light => Palette {

@@ -142,12 +142,12 @@ pub enum LayoutPreset {
     Maia,   // soft & rounded
     Lyra,   // boxy & sharp
     Mira,   // ultra dense
-    // New presets
     Zeta,   // wide sidebar, spacious cards
     Orion,  // terminal-first, narrow sidebar
     Aria,   // balanced, centered UI
     Dawn,   // extra rounded, airy
     Flux,   // floating panels, large gaps
+    NoRound
 }
 
 impl LayoutPreset {
@@ -163,6 +163,7 @@ impl LayoutPreset {
             Self::Aria  => "Aria",
             Self::Dawn  => "Dawn",
             Self::Flux  => "Flux",
+            Self::NoRound  => "NoRound",
         }
     }
 
@@ -178,13 +179,14 @@ impl LayoutPreset {
             Self::Aria  => "Balanced & centered panels",
             Self::Dawn  => "Extra rounded, airy spacing",
             Self::Flux  => "Floating panels, large gaps",
+            Self::NoRound  => "No rounded, no space.",
         }
     }
 
     pub fn all() -> &'static [LayoutPreset] {
         &[
             Self::Vega, Self::Nova, Self::Maia, Self::Lyra, Self::Mira,
-            Self::Zeta, Self::Orion, Self::Aria, Self::Dawn, Self::Flux,
+            Self::Zeta, Self::Orion, Self::Aria, Self::Dawn, Self::Flux, Self::NoRound,
         ]
     }
 }
