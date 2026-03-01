@@ -58,6 +58,52 @@ pub fn layout(preset: LayoutPreset) -> LayoutConfig {
             element_padding: 3,
             spacing: 2.0,
         },
+        // New presets
+        LayoutPreset::Zeta => LayoutConfig {
+            // Wide sidebar, card-like spacious panels
+            corner_radius: 8.0,
+            panel_gap: 6.0,
+            sidebar_width: 240.0,
+            container_padding: 12,
+            element_padding: 10,
+            spacing: 6.0,
+        },
+        LayoutPreset::Orion => LayoutConfig {
+            // Terminal-first: narrow sidebar, max space for terminal
+            corner_radius: 5.0,
+            panel_gap: 3.0,
+            sidebar_width: 150.0,
+            container_padding: 4,
+            element_padding: 4,
+            spacing: 3.0,
+        },
+        LayoutPreset::Aria => LayoutConfig {
+            // Balanced, symmetrical, clean
+            corner_radius: 10.0,
+            panel_gap: 6.0,
+            sidebar_width: 210.0,
+            container_padding: 10,
+            element_padding: 10,
+            spacing: 6.0,
+        },
+        LayoutPreset::Dawn => LayoutConfig {
+            // Extra rounded, airy, bubble-like
+            corner_radius: 20.0,
+            panel_gap: 10.0,
+            sidebar_width: 215.0,
+            container_padding: 16,
+            element_padding: 14,
+            spacing: 10.0,
+        },
+        LayoutPreset::Flux => LayoutConfig {
+            // Floating panels with large breathing room
+            corner_radius: 12.0,
+            panel_gap: 12.0,
+            sidebar_width: 205.0,
+            container_padding: 12,
+            element_padding: 8,
+            spacing: 8.0,
+        },
     }
 }
 
@@ -346,6 +392,158 @@ pub fn palette(theme: AppTheme) -> Palette {
             danger:         Color::from_rgb8(188, 88,  78),
             border:         Color::from_rgb8(50,  72,  48),
             border_focused: Color::from_rgb8(100, 182, 88),
+        },
+
+        AppTheme::Gruvbox => Palette {
+            // Warm retro dark — classic Gruvbox hard
+            bg_primary:     Color::from_rgb8(29,  32,  33),
+            bg_secondary:   Color::from_rgb8(40,  40,  40),
+            bg_tertiary:    Color::from_rgb8(50,  48,  47),
+            bg_hover:       Color::from_rgb8(60,  56,  54),
+            bg_active:      Color::from_rgb8(80,  73,  69),
+            text_primary:   Color::from_rgb8(235, 219, 178),
+            text_secondary: Color::from_rgb8(189, 174, 147),
+            text_muted:     Color::from_rgb8(124, 111, 100),
+            accent:         Color::from_rgb8(250, 189, 47),
+            accent_hover:   Color::from_rgb8(253, 200, 80),
+            success:        Color::from_rgb8(152, 151, 26),
+            warning:        Color::from_rgb8(214, 93,  14),
+            danger:         Color::from_rgb8(204, 36,  29),
+            border:         Color::from_rgb8(72,  65,  54),
+            border_focused: Color::from_rgb8(250, 189, 47),
+        },
+
+        AppTheme::TokyoNight => Palette {
+            // Tokyo Night — deep blue-purple dark
+            bg_primary:     Color::from_rgb8(26,  27,  38),
+            bg_secondary:   Color::from_rgb8(31,  35,  53),
+            bg_tertiary:    Color::from_rgb8(41,  46,  66),
+            bg_hover:       Color::from_rgb8(52,  59,  88),
+            bg_active:      Color::from_rgb8(65,  72, 104),
+            text_primary:   Color::from_rgb8(192, 202, 245),
+            text_secondary: Color::from_rgb8(131, 148, 191),
+            text_muted:     Color::from_rgb8(82,  95, 138),
+            accent:         Color::from_rgb8(122, 162, 247),
+            accent_hover:   Color::from_rgb8(148, 182, 255),
+            success:        Color::from_rgb8(158, 206, 106),
+            warning:        Color::from_rgb8(224, 175, 104),
+            danger:         Color::from_rgb8(247, 118, 142),
+            border:         Color::from_rgb8(54,  59,  88),
+            border_focused: Color::from_rgb8(122, 162, 247),
+        },
+
+        AppTheme::OneDark => Palette {
+            // Atom One Dark — balanced blue-grey
+            bg_primary:     Color::from_rgb8(24,  26,  31),
+            bg_secondary:   Color::from_rgb8(30,  33,  39),
+            bg_tertiary:    Color::from_rgb8(38,  42,  50),
+            bg_hover:       Color::from_rgb8(50,  55,  66),
+            bg_active:      Color::from_rgb8(65,  71,  87),
+            text_primary:   Color::from_rgb8(171, 178, 191),
+            text_secondary: Color::from_rgb8(130, 137, 151),
+            text_muted:     Color::from_rgb8(90,  96,  109),
+            accent:         Color::from_rgb8(97,  175, 239),
+            accent_hover:   Color::from_rgb8(120, 190, 248),
+            success:        Color::from_rgb8(152, 195, 121),
+            warning:        Color::from_rgb8(229, 192, 123),
+            danger:         Color::from_rgb8(224, 108, 117),
+            border:         Color::from_rgb8(56,  62,  75),
+            border_focused: Color::from_rgb8(97,  175, 239),
+        },
+
+        AppTheme::Ayu => Palette {
+            // Ayu Dark — burnt orange accent, dark charcoal
+            bg_primary:     Color::from_rgb8(13,  16,  23),
+            bg_secondary:   Color::from_rgb8(15,  20,  30),
+            bg_tertiary:    Color::from_rgb8(22,  30,  45),
+            bg_hover:       Color::from_rgb8(30,  44,  62),
+            bg_active:      Color::from_rgb8(42,  60,  84),
+            text_primary:   Color::from_rgb8(203, 204, 198),
+            text_secondary: Color::from_rgb8(147, 152, 160),
+            text_muted:     Color::from_rgb8(90,  96,  108),
+            accent:         Color::from_rgb8(255, 154, 63),
+            accent_hover:   Color::from_rgb8(255, 175, 96),
+            success:        Color::from_rgb8(149, 199, 89),
+            warning:        Color::from_rgb8(230, 177, 62),
+            danger:         Color::from_rgb8(240, 91,  88),
+            border:         Color::from_rgb8(36,  52,  72),
+            border_focused: Color::from_rgb8(255, 154, 63),
+        },
+
+        AppTheme::Rosepine => Palette {
+            // Rosé Pine — dusty rose on deep plum
+            bg_primary:     Color::from_rgb8(25,  23,  36),
+            bg_secondary:   Color::from_rgb8(31,  29,  46),
+            bg_tertiary:    Color::from_rgb8(38,  35,  58),
+            bg_hover:       Color::from_rgb8(50,  47,  76),
+            bg_active:      Color::from_rgb8(68,  64, 104),
+            text_primary:   Color::from_rgb8(224, 222, 244),
+            text_secondary: Color::from_rgb8(144, 140, 170),
+            text_muted:     Color::from_rgb8(110, 106, 134),
+            accent:         Color::from_rgb8(235, 188, 186),
+            accent_hover:   Color::from_rgb8(244, 206, 204),
+            success:        Color::from_rgb8(156, 207, 216),
+            warning:        Color::from_rgb8(246, 193, 119),
+            danger:         Color::from_rgb8(235, 111, 146),
+            border:         Color::from_rgb8(68,  64,  98),
+            border_focused: Color::from_rgb8(196, 167, 231),
+        },
+
+        AppTheme::Kanagawa => Palette {
+            // Kanagawa — Japanese wave blues & greens
+            bg_primary:     Color::from_rgb8(22,  22,  30),
+            bg_secondary:   Color::from_rgb8(28,  28,  38),
+            bg_tertiary:    Color::from_rgb8(38,  38,  54),
+            bg_hover:       Color::from_rgb8(50,  50,  70),
+            bg_active:      Color::from_rgb8(66,  66,  94),
+            text_primary:   Color::from_rgb8(220, 215, 186),
+            text_secondary: Color::from_rgb8(150, 160, 162),
+            text_muted:     Color::from_rgb8(95,  105, 108),
+            accent:         Color::from_rgb8(126, 156, 216),
+            accent_hover:   Color::from_rgb8(152, 178, 232),
+            success:        Color::from_rgb8(106, 153, 85),
+            warning:        Color::from_rgb8(192, 153, 86),
+            danger:         Color::from_rgb8(192, 87,  78),
+            border:         Color::from_rgb8(60,  60,  82),
+            border_focused: Color::from_rgb8(126, 156, 216),
+        },
+
+        AppTheme::Everforest => Palette {
+            // Everforest — muted sage green & warm ivory
+            bg_primary:     Color::from_rgb8(29,  32,  30),
+            bg_secondary:   Color::from_rgb8(36,  41,  37),
+            bg_tertiary:    Color::from_rgb8(48,  56,  48),
+            bg_hover:       Color::from_rgb8(60,  68,  60),
+            bg_active:      Color::from_rgb8(76,  88,  76),
+            text_primary:   Color::from_rgb8(211, 198, 170),
+            text_secondary: Color::from_rgb8(157, 157, 139),
+            text_muted:     Color::from_rgb8(115, 121, 97),
+            accent:         Color::from_rgb8(131, 165, 152),
+            accent_hover:   Color::from_rgb8(152, 187, 174),
+            success:        Color::from_rgb8(167, 192, 128),
+            warning:        Color::from_rgb8(219, 188, 127),
+            danger:         Color::from_rgb8(230, 126, 128),
+            border:         Color::from_rgb8(68,  80,  68),
+            border_focused: Color::from_rgb8(131, 165, 152),
+        },
+
+        AppTheme::Midnight => Palette {
+            // Midnight — pure deep blue-black, electric blue accent
+            bg_primary:     Color::from_rgb8(4,   6,   18),
+            bg_secondary:   Color::from_rgb8(8,   12,  30),
+            bg_tertiary:    Color::from_rgb8(14,  20,  46),
+            bg_hover:       Color::from_rgb8(20,  30,  64),
+            bg_active:      Color::from_rgb8(28,  44,  88),
+            text_primary:   Color::from_rgb8(200, 212, 240),
+            text_secondary: Color::from_rgb8(130, 150, 196),
+            text_muted:     Color::from_rgb8(74,  92,  142),
+            accent:         Color::from_rgb8(60,  140, 255),
+            accent_hover:   Color::from_rgb8(90,  165, 255),
+            success:        Color::from_rgb8(60,  200, 140),
+            warning:        Color::from_rgb8(200, 170, 60),
+            danger:         Color::from_rgb8(220, 60,  80),
+            border:         Color::from_rgb8(24,  36,  72),
+            border_focused: Color::from_rgb8(60,  140, 255),
         },
     }
 }

@@ -234,6 +234,10 @@ pub struct TerminalTab {
     // Input tracking & suggestions
     pub input_buffer: String,
     pub command_history: Vec<String>,
+    pub suggestion_index: Option<usize>,
+    // System management panel
+    pub sys_open: bool,
+    pub sys_state: crate::syspanel::SysState,
 }
 
 #[derive(Debug, Clone)]
@@ -395,8 +399,19 @@ pub enum Message {
     // Layout preset
     SettingsLayoutChanged(LayoutPreset),
 
+    // Settings — terminal appearance
+    SettingsFontSizeChanged(f32),
+    SettingsShowBordersChanged(bool),
+    SettingsSuggestionsChanged(bool),
+
     // Command suggestions
     TerminalSuggestionAccept(String),
+    TerminalSuggestionMove(i32),
+    TerminalCopyOutput,
+
+    // Scroll mode (keyboard navigation through terminal output)
+    TerminalScrollModeToggle,
+    TerminalScrollBy(f32), // delta: negative = up, positive = down
 
     // Security audit
     OpenSecurityAudit,
@@ -409,6 +424,15 @@ pub enum Message {
 
     // Reserved for future richer terminal integration
     TerminalEvent(u64, String),
+
+    // ── System management panel ──────────────────────────────────────────────
+    SysPanelOpen(u64),
+    SysPanelClose(u64),
+    SysPanelTabSwitch(u64, String),
+    SysPanelInput(u64, String, String),
+    SysPanelFetch(u64, String),
+    SysPanelAction(u64, String),
+    SysPanelFetched(u64, String, String),
 }
 
 // --- Main App ---
@@ -427,6 +451,10 @@ pub struct App {
     tab_counter: u64,
     terminal_runtime: HashMap<u64, TerminalRuntime>,
     terminal_scroll_id: scrollable::Id,
+
+    // Scroll mode (keyboard navigation through terminal output)
+    pub scroll_mode: bool,
+    pub scroll_position: f32, // 0.0 = top, 1.0 = bottom
 
     // Dialogs
     pub dialog: Option<dialogs::DialogState>,
@@ -477,6 +505,8 @@ impl App {
                 tab_counter: 0,
                 terminal_runtime: HashMap::new(),
                 terminal_scroll_id: scrollable::Id::new("terminal-output"),
+                scroll_mode: false,
+                scroll_position: 1.0,
                 dialog: None,
                 system_info,
                 sys,
@@ -555,6 +585,9 @@ impl App {
                                                 quick_cmds_visible: false,
                                                 input_buffer: String::new(),
                                                 command_history: Vec::new(),
+                                                suggestion_index: None,
+                                                sys_open: false,
+                                                sys_state: crate::syspanel::SysState::new(),
                                             }
                                         }
                                         _ => TerminalTab {
@@ -578,6 +611,9 @@ impl App {
                                             quick_cmds_visible: false,
                                             input_buffer: String::new(),
                                             command_history: Vec::new(),
+                                            suggestion_index: None,
+                                            sys_open: false,
+                                            sys_state: crate::syspanel::SysState::new(),
                                         },
                                     }
                                 }
@@ -599,6 +635,9 @@ impl App {
                                     quick_cmds_visible: false,
                                     input_buffer: String::new(),
                                     command_history: Vec::new(),
+                                    suggestion_index: None,
+                                    sys_open: false,
+                                    sys_state: crate::syspanel::SysState::new(),
                                 },
                             };
 
@@ -624,6 +663,9 @@ impl App {
                                 quick_cmds_visible: false,
                                 input_buffer: String::new(),
                                 command_history: Vec::new(),
+                                suggestion_index: None,
+                                sys_open: false,
+                                sys_state: crate::syspanel::SysState::new(),
                             };
                             self.terminal_tabs.push(tab);
                             self.active_tab = Some(self.terminal_tabs.len() - 1);
@@ -785,6 +827,9 @@ impl App {
                     theme: self.theme,
                     language: self.config.language,
                     layout: self.config.layout,
+                    terminal_font_size: self.config.terminal_font_size,
+                    show_borders: self.config.show_borders,
+                    suggestions_enabled: self.config.suggestions_enabled,
                 }));
             }
             Message::SaveSettings => {
@@ -814,6 +859,9 @@ impl App {
                     self.config.theme = form.theme;
                     self.config.language = form.language;
                     self.config.layout = form.layout;
+                    self.config.terminal_font_size = form.terminal_font_size;
+                    self.config.show_borders = form.show_borders;
+                    self.config.suggestions_enabled = form.suggestions_enabled;
                     let _ = config::save_config(&self.config);
 
                     // Sync from API if key is set
@@ -1174,10 +1222,73 @@ impl App {
                     form.layout = preset;
                 }
             }
+            Message::SettingsFontSizeChanged(size) => {
+                if let Some(dialogs::DialogState::Settings(ref mut form)) = self.dialog {
+                    form.terminal_font_size = size.clamp(8.0, 28.0);
+                }
+            }
+            Message::SettingsShowBordersChanged(val) => {
+                if let Some(dialogs::DialogState::Settings(ref mut form)) = self.dialog {
+                    form.show_borders = val;
+                }
+            }
+            Message::SettingsSuggestionsChanged(val) => {
+                if let Some(dialogs::DialogState::Settings(ref mut form)) = self.dialog {
+                    form.suggestions_enabled = val;
+                }
+            }
+            Message::TerminalScrollModeToggle => {
+                self.scroll_mode = !self.scroll_mode;
+                if !self.scroll_mode {
+                    // Re-snap to bottom when leaving scroll mode
+                    self.scroll_position = 1.0;
+                    return scrollable::snap_to(
+                        self.terminal_scroll_id.clone(),
+                        scrollable::RelativeOffset { x: 0.0, y: 1.0 },
+                    );
+                }
+            }
+            Message::TerminalScrollBy(delta) => {
+                self.scroll_position = (self.scroll_position + delta).clamp(0.0, 1.0);
+                return scrollable::snap_to(
+                    self.terminal_scroll_id.clone(),
+                    scrollable::RelativeOffset { x: 0.0, y: self.scroll_position },
+                );
+            }
             Message::TerminalKeyPressed(key, modifiers) => {
                 if self.dialog.is_some() {
                     return Task::none();
                 }
+
+                // Scroll mode: intercept arrows for terminal scrolling
+                if self.scroll_mode {
+                    match &key {
+                        Key::Named(Named::ArrowUp) => {
+                            return self.update(Message::TerminalScrollBy(-0.05));
+                        }
+                        Key::Named(Named::ArrowDown) => {
+                            return self.update(Message::TerminalScrollBy(0.05));
+                        }
+                        Key::Named(Named::PageUp) => {
+                            return self.update(Message::TerminalScrollBy(-0.20));
+                        }
+                        Key::Named(Named::PageDown) => {
+                            return self.update(Message::TerminalScrollBy(0.20));
+                        }
+                        Key::Named(Named::Home) => {
+                            return self.update(Message::TerminalScrollBy(-1.0));
+                        }
+                        Key::Named(Named::End) => {
+                            return self.update(Message::TerminalScrollBy(1.0));
+                        }
+                        Key::Named(Named::Escape) | Key::Character(_) => {
+                            // Any printable key exits scroll mode and passes through
+                            self.scroll_mode = false;
+                        }
+                        _ => return Task::none(),
+                    }
+                }
+
                 // Intercept terminal shortcuts before passing to SSH
                 if modifiers.control() {
                     if let Key::Character(ref c) = key {
@@ -1186,11 +1297,68 @@ impl App {
                             "=" | "+" => return self.update(Message::TerminalFontSizeInc),
                             "-" => return self.update(Message::TerminalFontSizeDec),
                             "0" => return self.update(Message::TerminalFontSizeReset),
+                            // Ctrl+V → paste from system clipboard
+                            "v" => {
+                                return iced::clipboard::read().map(|content| {
+                                    Message::TerminalSendBytes(
+                                        content.unwrap_or_default().into_bytes(),
+                                    )
+                                });
+                            }
                             _ => {}
                         }
                     }
+                    // Ctrl+Space → start/reset suggestion keyboard navigation
+                    if matches!(key, Key::Named(Named::Space)) {
+                        if let Some(active) = self.active_tab {
+                            let triggers: Vec<String> = self.config.custom_commands.iter().map(|c| c.trigger.clone()).collect();
+                            let has_suggestions = !compute_suggestions(&self.terminal_tabs[active], &triggers).is_empty();
+                            if has_suggestions {
+                                return self.update(Message::TerminalSuggestionMove(1));
+                            }
+                        }
+                    }
                 }
-                // Esc → close search
+
+                // Suggestion panel arrow-key navigation / Tab accept / Esc dismiss
+                if let Some(active) = self.active_tab {
+                    let sugg_idx = self.terminal_tabs
+                        .get(active)
+                        .and_then(|t| t.suggestion_index);
+
+                    match &key {
+                        // ArrowDown: navigate suggestions only when already in suggestion mode.
+                        // When sugg_idx is None, ArrowDown passes through to SSH so bash
+                        // history navigation (↓ key) works normally without accidental
+                        // suggestion activation that can trigger alias scripts.
+                        Key::Named(Named::ArrowDown) if sugg_idx.is_some() => {
+                            return self.update(Message::TerminalSuggestionMove(1));
+                        }
+                        // ArrowUp: navigate up or deselect if at top
+                        Key::Named(Named::ArrowUp) if sugg_idx.is_some() => {
+                            return self.update(Message::TerminalSuggestionMove(-1));
+                        }
+                        // Tab: accept highlighted suggestion (if any)
+                        Key::Named(Named::Tab) if sugg_idx.is_some() => {
+                            let triggers: Vec<String> = self.config.custom_commands.iter().map(|c| c.trigger.clone()).collect();
+                            let suggestions = compute_suggestions(&self.terminal_tabs[active], &triggers);
+                            if let Some(idx) = sugg_idx {
+                                if let Some(cmd) = suggestions.get(idx).cloned() {
+                                    return self.update(Message::TerminalSuggestionAccept(cmd));
+                                }
+                            }
+                            // No match — fall through and send Tab to SSH
+                        }
+                        // Esc: dismiss suggestion selection
+                        Key::Named(Named::Escape) if sugg_idx.is_some() => {
+                            self.terminal_tabs[active].suggestion_index = None;
+                            return Task::none();
+                        }
+                        _ => {}
+                    }
+                }
+
+                // Esc → close search (when no suggestion was dismissed above)
                 if matches!(key, Key::Named(Named::Escape)) {
                     let searching = self.active_tab
                         .and_then(|i| self.terminal_tabs.get(i))
@@ -1248,16 +1416,34 @@ impl App {
                     } else if let Some(tab) = self.terminal_tabs.get_mut(active) {
                         if bytes.len() == 1 {
                             match bytes[0] {
-                                127 => { tab.input_buffer.pop(); }                // Backspace
-                                3 | 21 | 27 => { tab.input_buffer.clear(); }     // Ctrl+C / Ctrl+U / Esc
-                                b if b >= 32 => { tab.input_buffer.push(b as char); }
+                                127 => {
+                                    tab.input_buffer.pop();
+                                    tab.suggestion_index = None;
+                                }
+                                3 | 21 | 27 => {
+                                    tab.input_buffer.clear();
+                                    tab.suggestion_index = None;
+                                }
+                                b if b >= 32 => {
+                                    tab.input_buffer.push(b as char);
+                                    tab.suggestion_index = None;
+                                }
                                 _ => {}
                             }
-                        } else if !bytes.is_empty() && bytes[0] != 27 {
-                            // Multi-byte printable text (e.g., UTF-8 from IME)
-                            if bytes.iter().all(|&b| b >= 32) {
+                        } else if !bytes.is_empty() {
+                            if bytes[0] == 27 {
+                                // Escape sequence (arrow keys, function keys, cursor movement).
+                                // Clear the buffer because these keys can move the cursor or
+                                // navigate bash history, making the local buffer unreliable.
+                                // Without this, a stale buffer could accidentally match an
+                                // alias trigger and run its script unexpectedly.
+                                tab.input_buffer.clear();
+                                tab.suggestion_index = None;
+                            } else if bytes.iter().all(|&b| b >= 32) {
+                                // Multi-byte printable text (e.g., UTF-8 from IME or paste)
                                 if let Ok(s) = std::str::from_utf8(&bytes) {
                                     tab.input_buffer.push_str(s);
+                                    tab.suggestion_index = None;
                                 }
                             }
                         }
@@ -1274,11 +1460,13 @@ impl App {
                                 let _ = stdin.write_all(&bytes);
                                 let _ = stdin.flush();
                             }
-                            should_snap_bottom = !in_alternate_screen;
+                            // Only snap to bottom when not in scroll mode
+                            should_snap_bottom = !in_alternate_screen && !self.scroll_mode;
                         }
                     }
                 }
                 if should_snap_bottom {
+                    self.scroll_position = 1.0;
                     return scrollable::snap_to(
                         self.terminal_scroll_id.clone(),
                         scrollable::RelativeOffset { x: 0.0, y: 1.0 },
@@ -1365,13 +1553,16 @@ impl App {
                 }
 
                 if should_snap_top {
+                    self.scroll_position = 0.0;
                     return scrollable::snap_to(
                         self.terminal_scroll_id.clone(),
                         scrollable::RelativeOffset { x: 0.0, y: 0.0 },
                     );
                 }
 
-                if should_snap_bottom {
+                // Only auto-snap to bottom when NOT in scroll mode
+                if should_snap_bottom && !self.scroll_mode {
+                    self.scroll_position = 1.0;
                     return scrollable::snap_to(
                         self.terminal_scroll_id.clone(),
                         scrollable::RelativeOffset { x: 0.0, y: 1.0 },
@@ -1387,6 +1578,7 @@ impl App {
                 let Some(i) = self.active_tab else { return Task::none(); };
                 // Update local buffer to reflect what we're inserting
                 self.terminal_tabs[i].input_buffer = cmd.clone();
+                self.terminal_tabs[i].suggestion_index = None;
                 // Send Ctrl+U to clear current input, then type the suggestion
                 let mut bytes = vec![21u8];
                 bytes.extend_from_slice(cmd.as_bytes());
@@ -1398,6 +1590,34 @@ impl App {
                         }
                     }
                 }
+            }
+            Message::TerminalSuggestionMove(delta) => {
+                let Some(i) = self.active_tab else { return Task::none(); };
+                let triggers: Vec<String> = self.config.custom_commands.iter().map(|c| c.trigger.clone()).collect();
+                let suggestions = compute_suggestions(&self.terminal_tabs[i], &triggers);
+                if suggestions.is_empty() {
+                    return Task::none();
+                }
+                let current = self.terminal_tabs[i].suggestion_index;
+                let new_idx = match current {
+                    None => {
+                        if delta > 0 { Some(0) } else { None }
+                    }
+                    Some(idx) => {
+                        let next = idx as i32 + delta;
+                        if next < 0 {
+                            None
+                        } else {
+                            Some((next as usize).min(suggestions.len().saturating_sub(1)))
+                        }
+                    }
+                };
+                self.terminal_tabs[i].suggestion_index = new_idx;
+            }
+            Message::TerminalCopyOutput => {
+                let Some(i) = self.active_tab else { return Task::none(); };
+                let content = self.terminal_tabs[i].output.clone();
+                return iced::clipboard::write::<Message>(content);
             }
 
             // ── Security audit ────────────────────────────────────────────
@@ -1446,6 +1666,103 @@ impl App {
                     let _ = config::save_config(&self.config);
                 }
                 self.dialog = None;
+            }
+
+            // ── System Panel ──────────────────────────────────────────────────
+            Message::SysPanelOpen(tab_id) => {
+                if let Some(tab) = self.terminal_tabs.iter_mut().find(|t| t.id == tab_id) {
+                    tab.sys_open = true;
+                    tab.sys_state = crate::syspanel::SysState::new();
+                    let host = tab.host.clone();
+                    return crate::syspanel::fetch_overview(host, tab_id);
+                }
+            }
+            Message::SysPanelClose(tab_id) => {
+                if let Some(tab) = self.terminal_tabs.iter_mut().find(|t| t.id == tab_id) {
+                    tab.sys_open = false;
+                }
+            }
+            Message::SysPanelTabSwitch(tab_id, tab_name) => {
+                if let Some(tab) = self.terminal_tabs.iter_mut().find(|t| t.id == tab_id) {
+                    let new_tab = crate::syspanel::SysTab::from_str(&tab_name);
+                    tab.sys_state.tab = new_tab.clone();
+                    tab.sys_state.loading = true;
+                    tab.sys_state.output.clear();
+                    tab.sys_state.action_result = None;
+                    let host = tab.host.clone();
+                    return match new_tab {
+                        crate::syspanel::SysTab::Overview => crate::syspanel::fetch_overview(host, tab_id),
+                        crate::syspanel::SysTab::Firewall => crate::syspanel::fetch_firewall(host, tab_id),
+                        crate::syspanel::SysTab::Packages => crate::syspanel::fetch_packages(host, tab_id),
+                        crate::syspanel::SysTab::Logins => crate::syspanel::fetch_logins(host, tab_id),
+                        crate::syspanel::SysTab::SshKeys => crate::syspanel::fetch_ssh_keys(host, tab_id),
+                        crate::syspanel::SysTab::Extension(ref id) => {
+                            crate::syspanel::fetch_extension(host, tab_id, id.clone())
+                        }
+                    };
+                }
+            }
+            Message::SysPanelInput(tab_id, field, value) => {
+                if let Some(tab) = self.terminal_tabs.iter_mut().find(|t| t.id == tab_id) {
+                    match field.as_str() {
+                        "fw_port"   => tab.sys_state.fw_port = value,
+                        "fw_proto"  => tab.sys_state.fw_proto = value,
+                        "fw_action" => tab.sys_state.fw_action = value,
+                        "pkg_search" => tab.sys_state.pkg_search = value,
+                        "key_name"  => tab.sys_state.key_name = value,
+                        "key_type"  => tab.sys_state.key_type = value,
+                        _ => {}
+                    }
+                }
+            }
+            Message::SysPanelFetch(tab_id, kind) => {
+                if let Some(tab) = self.terminal_tabs.iter_mut().find(|t| t.id == tab_id) {
+                    tab.sys_state.loading = true;
+                    tab.sys_state.output.clear();
+                    tab.sys_state.action_result = None;
+                    let host = tab.host.clone();
+                    return match kind.as_str() {
+                        "overview"  => crate::syspanel::fetch_overview(host, tab_id),
+                        "firewall"  => crate::syspanel::fetch_firewall(host, tab_id),
+                        "packages"  => crate::syspanel::fetch_packages(host, tab_id),
+                        "logins"    => crate::syspanel::fetch_logins(host, tab_id),
+                        "sshkeys"   => crate::syspanel::fetch_ssh_keys(host, tab_id),
+                        ext_id      => crate::syspanel::fetch_extension(host, tab_id, ext_id.to_string()),
+                    };
+                }
+            }
+            Message::SysPanelAction(tab_id, cmd) => {
+                if let Some(tab) = self.terminal_tabs.iter_mut().find(|t| t.id == tab_id) {
+                    tab.sys_state.loading = true;
+                    tab.sys_state.action_result = None;
+                    let host = tab.host.clone();
+                    return crate::syspanel::run_action(host, tab_id, cmd);
+                }
+            }
+            Message::SysPanelFetched(tab_id, kind, output) => {
+                if let Some(tab) = self.terminal_tabs.iter_mut().find(|t| t.id == tab_id) {
+                    tab.sys_state.loading = false;
+                    match kind.as_str() {
+                        "action" => {
+                            tab.sys_state.action_result = Some(output.lines().last().unwrap_or("Done").to_string());
+                            // Refresh current panel after action
+                            let host = tab.host.clone();
+                            let current_tab = tab.sys_state.tab.clone();
+                            return match current_tab {
+                                crate::syspanel::SysTab::Firewall => crate::syspanel::fetch_firewall(host, tab_id),
+                                crate::syspanel::SysTab::Extension(ref id) => crate::syspanel::fetch_extension(host, tab_id, id.clone()),
+                                _ => { tab.sys_state.output = output; Task::none() }
+                            };
+                        }
+                        "overview" => {
+                            tab.sys_state.extensions = crate::syspanel::parse_extensions(&output);
+                            tab.sys_state.output = output;
+                        }
+                        _ => {
+                            tab.sys_state.output = output;
+                        }
+                    }
+                }
             }
         }
         Task::none()
@@ -1518,6 +1835,17 @@ impl App {
 
         if let Some(active) = self.active_tab {
             if let Some(tab) = self.terminal_tabs.get(active) {
+                // If system panel is open, show it instead of the terminal
+                if tab.sys_open {
+                    return crate::syspanel::view_sys_panel(
+                        tab.id,
+                        &tab.sys_state,
+                        &tab.host,
+                        self.theme,
+                        self.config.layout,
+                    );
+                }
+
                 let status_text = if tab.connected { "connected" } else { "disconnected" };
                 let status_color = if tab.connected { p.success } else { p.danger };
 
@@ -1525,6 +1853,7 @@ impl App {
                 let mut top_bar_row = iced::widget::Row::new()
                     .spacing(4)
                     .align_y(iced::Alignment::Center);
+                let scroll_mode = self.scroll_mode;
                 top_bar_row = top_bar_row
                     .push(
                         text(format!(
@@ -1534,8 +1863,23 @@ impl App {
                         .size(11)
                         .color(p.text_muted),
                     )
-                    .push(text(format!("  ·  {}", status_text)).size(11).color(status_color))
-                    .push(iced::widget::horizontal_space());
+                    .push(text(format!("  ·  {}", status_text)).size(11).color(status_color));
+                if scroll_mode {
+                    top_bar_row = top_bar_row.push(
+                        container(
+                            text("  SCROLL MODE  ↑↓/PgUp/PgDn · Esc or type to exit")
+                                .size(10)
+                                .color(p.accent),
+                        )
+                        .padding([2, 8])
+                        .style(move |_: &iced::Theme| container::Style {
+                            background: Some(iced::Background::Color(p.bg_tertiary)),
+                            border: iced::Border { color: p.accent, width: 1.0, radius: cr.into() },
+                            ..Default::default()
+                        }),
+                    );
+                }
+                top_bar_row = top_bar_row.push(iced::widget::horizontal_space());
                 if tab.ftp.visible {
                     let layout_label = match tab.ftp.layout {
                         FtpLayout::Bottom => "Right Side",  // switch to Right
@@ -1550,13 +1894,19 @@ impl App {
                         Message::TerminalQuickCmdsToggle, p,
                     ))
                     .push(terminal_action_button(
-                        if tab.search_active { "⌕ ●" } else { "⌕" },
+                        if tab.search_active { "Search ●" } else { "Search" },
                         Message::TerminalSearchToggle, p,
+                    ))
+                    .push(terminal_action_button(
+                        if scroll_mode { "SCROLL ●" } else { "SCROLL" },
+                        Message::TerminalScrollModeToggle, p,
                     ))
                     .push(terminal_action_button("A-", Message::TerminalFontSizeDec, p))
                     .push(terminal_action_button("A+", Message::TerminalFontSizeInc, p))
                     .push(terminal_action_button("^C", Message::TerminalSendCtrlC, p))
-                    .push(terminal_action_button("Clear", Message::TerminalClear, p));
+                    .push(terminal_action_button("Copy", Message::TerminalCopyOutput, p))
+                    .push(terminal_action_button("Clear", Message::TerminalClear, p))
+                    .push(terminal_action_button("⚙ System", Message::SysPanelOpen(tab.id), p));
                 let top_bar = top_bar_row;
 
                 // Terminal spans — with optional search highlight
@@ -1592,7 +1942,12 @@ impl App {
                     .map(|rt| rt.parser.screen().alternate_screen())
                     .unwrap_or(false);
 
-                let font_sz = tab.font_size;
+                // Per-tab font size (overrides global default when explicitly changed)
+                let font_sz = if (tab.font_size - 13.0).abs() < 0.1 {
+                    self.config.terminal_font_size
+                } else {
+                    tab.font_size
+                };
                 let terminal_view = container(
                     scrollable(
                         rich_text(terminal_spans)
@@ -1706,85 +2061,6 @@ impl App {
                     }
                 }
 
-                // Suggestion panel (autocomplete) — shown when user is typing
-                if !tab.input_buffer.is_empty() && !in_alternate_screen {
-                    let buf_lower = tab.input_buffer.to_lowercase();
-
-                    // History matches (newest first)
-                    let mut suggestions: Vec<String> = tab
-                        .command_history
-                        .iter()
-                        .rev()
-                        .filter(|cmd| {
-                            let cl = cmd.to_lowercase();
-                            cl.starts_with(&buf_lower) && cl != buf_lower
-                        })
-                        .take(4)
-                        .cloned()
-                        .collect();
-
-                    // Built-in matches
-                    for &builtin in BUILT_IN_SUGGESTIONS {
-                        if suggestions.len() >= 8 {
-                            break;
-                        }
-                        if builtin.to_lowercase().starts_with(&buf_lower)
-                            && builtin != tab.input_buffer.as_str()
-                            && !suggestions.iter().any(|s| s == builtin)
-                        {
-                            suggestions.push(builtin.to_string());
-                        }
-                    }
-
-                    if !suggestions.is_empty() {
-                        let mut sugg_row = iced::widget::Row::new()
-                            .spacing(3)
-                            .padding([2, 6])
-                            .align_y(Alignment::Center);
-                        sugg_row = sugg_row.push(
-                            text("→").size(10).color(p.text_muted)
-                        );
-                        let history_set: std::collections::HashSet<String> =
-                            tab.command_history.iter().cloned().collect();
-                        for suggestion in suggestions {
-                            let from_history = history_set.contains(&suggestion);
-                            let text_color = if from_history { p.accent } else { p.text_secondary };
-                            let cmd_str = suggestion.clone();
-                            sugg_row = sugg_row.push(
-                                button(text(suggestion).size(10).color(text_color))
-                                    .on_press(Message::TerminalSuggestionAccept(cmd_str))
-                                    .padding([1, 6])
-                                    .style(move |_: &iced::Theme, s: button::Status| button::Style {
-                                        background: Some(iced::Background::Color(match s {
-                                            button::Status::Hovered => p.bg_hover,
-                                            _ => p.bg_primary,
-                                        })),
-                                        text_color,
-                                        border: iced::Border {
-                                            color: p.border_focused,
-                                            width: 1.0,
-                                            radius: cr.into(),
-                                        },
-                                        ..Default::default()
-                                    }),
-                            );
-                        }
-                        let sugg_bar = container(sugg_row)
-                            .width(Length::Fill)
-                            .padding([0, 2])
-                            .style(move |_: &iced::Theme| container::Style {
-                                background: Some(iced::Background::Color(p.bg_primary)),
-                                border: iced::Border {
-                                    color: p.border_focused,
-                                    width: 1.0,
-                                    radius: cr.into(),
-                                },
-                                ..Default::default()
-                            });
-                        panel = panel.push(sugg_bar);
-                    }
-                }
-
                 // Search bar
                 if tab.search_active && !in_alternate_screen {
                     let sq = tab.search_query.clone();
@@ -1841,8 +2117,102 @@ impl App {
                     panel = panel.push(text(format!("⚠ {}", err)).size(10).color(p.danger));
                 }
 
+                // Autocomplete panel — shown BELOW the terminal while user is typing
+                if !tab.input_buffer.is_empty() && !in_alternate_screen && self.config.suggestions_enabled {
+                    let alias_triggers: Vec<String> = self.config.custom_commands.iter().map(|c| c.trigger.clone()).collect();
+                    let suggestions = compute_suggestions(tab, &alias_triggers);
+                    if !suggestions.is_empty() {
+                        let sugg_idx = tab.suggestion_index;
+                        let history_set: std::collections::HashSet<String> =
+                            tab.command_history.iter().cloned().collect();
+                        let alias_set: std::collections::HashSet<String> =
+                            alias_triggers.iter().cloned().collect();
+
+                        let mut sugg_col = Column::new().spacing(0).width(Length::Fill);
+
+                        // Hint header
+                        sugg_col = sugg_col.push(
+                            container(
+                                row![
+                                    text("Suggestions").size(9).color(p.text_muted),
+                                    text("  Click or Ctrl+Space to select").size(9).color(p.text_muted),
+                                    text("  ↑↓ navigate").size(9).color(p.text_muted),
+                                    text("  Tab accept").size(9).color(p.text_muted),
+                                    text("  Esc close").size(9).color(p.text_muted),
+                                ]
+                                .spacing(4)
+                                .align_y(Alignment::Center),
+                            )
+                            .padding([2, 8])
+                            .width(Length::Fill)
+                            .style(move |_: &iced::Theme| container::Style {
+                                background: Some(iced::Background::Color(p.bg_tertiary)),
+                                ..Default::default()
+                            }),
+                        );
+
+                        for (idx, suggestion) in suggestions.iter().enumerate() {
+                            let is_selected = sugg_idx == Some(idx);
+                            let is_alias = alias_set.contains(suggestion.as_str());
+                            let from_history = history_set.contains(suggestion.as_str());
+                            let text_color = if is_alias {
+                                p.success
+                            } else if from_history {
+                                p.accent
+                            } else {
+                                p.text_secondary
+                            };
+                            let bg_color = if is_selected { p.bg_hover } else { p.bg_primary };
+                            let cmd_str = suggestion.clone();
+                            let prefix = if is_selected { "▶ " } else if is_alias { "⚡ " } else { "  " };
+                            let label = suggestion.clone();
+                            sugg_col = sugg_col.push(
+                                button(
+                                    row![
+                                        text(prefix).size(11).color(if is_alias { p.success } else { p.accent }),
+                                        text(label).size(11).color(text_color),
+                                    ]
+                                    .align_y(Alignment::Center),
+                                )
+                                .on_press(Message::TerminalSuggestionAccept(cmd_str))
+                                .padding([3, 8])
+                                .width(Length::Fill)
+                                .style(move |_: &iced::Theme, s: button::Status| button::Style {
+                                    background: Some(iced::Background::Color(match s {
+                                        button::Status::Hovered | button::Status::Pressed => {
+                                            p.bg_hover
+                                        }
+                                        _ => bg_color,
+                                    })),
+                                    text_color,
+                                    border: iced::Border {
+                                        color: if is_selected { p.border_focused } else { p.border },
+                                        width: if is_selected { 1.0 } else { 0.0 },
+                                        radius: 0.0.into(),
+                                    },
+                                    ..Default::default()
+                                }),
+                            );
+                        }
+
+                        let sugg_panel = container(sugg_col)
+                            .width(Length::Fill)
+                            .style(move |_: &iced::Theme| container::Style {
+                                background: Some(iced::Background::Color(p.bg_primary)),
+                                border: iced::Border {
+                                    color: p.border_focused,
+                                    width: 1.0,
+                                    radius: cr.into(),
+                                },
+                                ..Default::default()
+                            });
+                        panel = panel.push(sugg_panel);
+                    }
+                }
+
                 // Terminal container block
                 let ftp_theme = self.theme;
+                let borders = self.config.show_borders;
                 let terminal_block = container(panel)
                     .padding([8, 10])
                     .width(Length::Fill)
@@ -1851,7 +2221,7 @@ impl App {
                         background: Some(iced::Background::Color(p.bg_secondary)),
                         border: iced::Border {
                             color: p.border,
-                            width: 1.0,
+                            width: if borders { 1.0 } else { 0.0 },
                             radius: cr.into(),
                         },
                         ..Default::default()
@@ -1941,6 +2311,17 @@ fn runtime_event_to_message(
         ..
     }) = event
     {
+        // Ctrl+character combos MUST bypass the `text` shortcut.
+        // On Windows, Ctrl+V produces text="\x16" (byte 22) which would be
+        // forwarded raw to SSH — our Ctrl+V (paste), Ctrl+F (search), etc.
+        // shortcuts would never fire. Route through TerminalKeyPressed;
+        // map_key_to_bytes still converts Ctrl+A→\x01, Ctrl+C→\x03, etc.
+        if modifiers.control() {
+            if let Key::Character(_) = &modified_key {
+                return Some(Message::TerminalKeyPressed(modified_key, modifiers));
+            }
+        }
+
         if let Some(text) = text {
             if !text.is_empty() {
                 return Some(Message::TerminalSendBytes(text.as_bytes().to_vec()));
@@ -2003,6 +2384,7 @@ fn map_key_to_bytes(key: Key, modifiers: Modifiers) -> Option<Vec<u8>> {
 #[derive(Clone, Copy, PartialEq)]
 struct TermSpanStyle {
     fg: iced::Color,
+    bg: Option<iced::Color>,
     bold: bool,
     italic: bool,
     underline: bool,
@@ -2016,6 +2398,7 @@ fn build_terminal_spans(runtime: &TerminalRuntime, default_color: iced::Color) -
     let mut current_text = String::new();
     let mut current_style = TermSpanStyle {
         fg: default_color,
+        bg: None,
         bold: false,
         italic: false,
         underline: false,
@@ -2035,8 +2418,13 @@ fn build_terminal_spans(runtime: &TerminalRuntime, default_color: iced::Color) -
                 if raw.is_empty() { " ".to_string() } else { raw }
             };
 
+            let bg = match cell.bgcolor() {
+                vt100::Color::Default => None,
+                c => Some(vt_color_to_iced(c, default_color)),
+            };
             let style = TermSpanStyle {
                 fg: vt_color_to_iced(cell.fgcolor(), default_color),
+                bg,
                 bold: cell.bold(),
                 italic: cell.italic(),
                 underline: cell.underline(),
@@ -2078,6 +2466,9 @@ fn span_from_style(text_value: &str, style: TermSpanStyle) -> iced::widget::text
     let mut s = iced::widget::text::Span::new(text_value.to_string())
         .color(style.fg)
         .font(font);
+    if let Some(bg) = style.bg {
+        s = s.background(iced::Background::Color(bg));
+    }
     if style.underline {
         s = s.underline(true);
     }
@@ -2145,6 +2536,51 @@ const QUICK_CMDS: &[(&str, &str)] = &[
     ("env",     "env | sort\r"),
     ("disk",    "du -sh * 2>/dev/null | sort -rh | head -20\r"),
 ];
+
+// ─── Suggestion helpers ────────────────────────────────────────────────────
+
+fn compute_suggestions(tab: &TerminalTab, alias_triggers: &[String]) -> Vec<String> {
+    if tab.input_buffer.is_empty() {
+        return vec![];
+    }
+    let buf_lower = tab.input_buffer.to_lowercase();
+    let mut suggestions: Vec<String> = tab
+        .command_history
+        .iter()
+        .rev()
+        .filter(|cmd| {
+            let cl = cmd.to_lowercase();
+            cl.starts_with(&buf_lower) && cl != buf_lower
+        })
+        .take(4)
+        .cloned()
+        .collect();
+    // Custom alias triggers — shown first so users can discover them
+    for trigger in alias_triggers {
+        if suggestions.len() >= 8 {
+            break;
+        }
+        let tl = trigger.to_lowercase();
+        if tl.starts_with(&buf_lower)
+            && trigger.as_str() != tab.input_buffer.as_str()
+            && !suggestions.iter().any(|s| s == trigger)
+        {
+            suggestions.push(trigger.clone());
+        }
+    }
+    for &builtin in BUILT_IN_SUGGESTIONS {
+        if suggestions.len() >= 8 {
+            break;
+        }
+        if builtin.to_lowercase().starts_with(&buf_lower)
+            && builtin != tab.input_buffer.as_str()
+            && !suggestions.iter().any(|s| s == builtin)
+        {
+            suggestions.push(builtin.to_string());
+        }
+    }
+    suggestions
+}
 
 // ─── Built-in suggestions for autocomplete ────────────────────────────────
 const BUILT_IN_SUGGESTIONS: &[&str] = &[

@@ -34,6 +34,9 @@ pub struct SettingsForm {
     pub theme: AppTheme,
     pub language: Language,
     pub layout: LayoutPreset,
+    pub terminal_font_size: f32,
+    pub show_borders: bool,
+    pub suggestions_enabled: bool,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -97,6 +100,9 @@ pub fn view_dialog(texts: &Texts, state: &DialogState, theme: AppTheme, lc: them
             let form_clone = form.clone();
             let current_theme = form_clone.theme;
             let current_layout = form_clone.layout;
+            let font_size = form_clone.terminal_font_size;
+            let borders_on = form_clone.show_borders;
+            let suggestions_on = form_clone.suggestions_enabled;
 
             let theme_picker = pick_list(
                 AppTheme::all(),
@@ -164,6 +170,44 @@ pub fn view_dialog(texts: &Texts, state: &DialogState, theme: AppTheme, lc: them
                         Message::SettingsLanguageChanged(Language::English), theme, cr),
                 ]
                 .spacing(8),
+                // Terminal appearance
+                text("Terminal Appearance").size(13).color(p.text_primary),
+                column![
+                    text("Default Font Size").size(11).color(p.text_secondary),
+                    row![
+                        select_button("A-", false,
+                            Message::SettingsFontSizeChanged(font_size - 1.0), theme, cr),
+                        container(
+                            text(format!("{:.0}px", font_size)).size(11).color(p.text_primary)
+                        )
+                        .padding([4, 10])
+                        .style(move |_: &iced::Theme| container::Style {
+                            background: Some(iced::Background::Color(p.bg_tertiary)),
+                            border: iced::Border { color: p.border, width: 1.0, radius: cr.into() },
+                            ..Default::default()
+                        }),
+                        select_button("A+", false,
+                            Message::SettingsFontSizeChanged(font_size + 1.0), theme, cr),
+                    ].spacing(6).align_y(iced::Alignment::Center),
+                ].spacing(4),
+                column![
+                    text("Panel Borders").size(11).color(p.text_secondary),
+                    row![
+                        select_button("Bordered", borders_on,
+                            Message::SettingsShowBordersChanged(true), theme, cr),
+                        select_button("Borderless", !borders_on,
+                            Message::SettingsShowBordersChanged(false), theme, cr),
+                    ].spacing(6),
+                ].spacing(4),
+                column![
+                    text("Command Suggestions").size(11).color(p.text_secondary),
+                    row![
+                        select_button("Enabled", suggestions_on,
+                            Message::SettingsSuggestionsChanged(true), theme, cr),
+                        select_button("Disabled", !suggestions_on,
+                            Message::SettingsSuggestionsChanged(false), theme, cr),
+                    ].spacing(6),
+                ].spacing(4),
                 row![
                     dialog_button(texts.cancel, Message::CloseDialog, false, theme, cr),
                     dialog_button(texts.save, Message::SaveSettings, true, theme, cr),
@@ -171,7 +215,7 @@ pub fn view_dialog(texts: &Texts, state: &DialogState, theme: AppTheme, lc: them
                 .spacing(8),
             ]
             .spacing(12)
-            .width(Length::Fixed(400.0))
+            .width(Length::Fixed(420.0))
             .into()
         }
 

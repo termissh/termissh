@@ -53,11 +53,19 @@ pub enum AppTheme {
     Haki,
     SoftRose,
     SoftSky,
-    // New themes
     CyberPunk,
     Mocha,
     Ocean,
     Forest,
+    // New themes
+    Gruvbox,
+    TokyoNight,
+    OneDark,
+    Ayu,
+    Rosepine,
+    Kanagawa,
+    Everforest,
+    Midnight,
 }
 
 impl AppTheme {
@@ -77,6 +85,14 @@ impl AppTheme {
             Self::Mocha => "Mocha",
             Self::Ocean => "Ocean",
             Self::Forest => "Forest",
+            Self::Gruvbox => "Gruvbox",
+            Self::TokyoNight => "Tokyo Night",
+            Self::OneDark => "One Dark",
+            Self::Ayu => "Ayu Dark",
+            Self::Rosepine => "Rosé Pine",
+            Self::Kanagawa => "Kanagawa",
+            Self::Everforest => "Everforest",
+            Self::Midnight => "Midnight",
         }
     }
 
@@ -96,6 +112,14 @@ impl AppTheme {
             Self::Mocha,
             Self::Ocean,
             Self::Forest,
+            Self::Gruvbox,
+            Self::TokyoNight,
+            Self::OneDark,
+            Self::Ayu,
+            Self::Rosepine,
+            Self::Kanagawa,
+            Self::Everforest,
+            Self::Midnight,
         ]
     }
 
@@ -113,36 +137,55 @@ impl std::fmt::Display for AppTheme {
 #[derive(Serialize, Deserialize, Clone, Copy, Debug, PartialEq, Default)]
 pub enum LayoutPreset {
     #[default]
-    Vega,   // clean & familiar (shadcn/ui-like)
+    Vega,   // clean & familiar
     Nova,   // compact
     Maia,   // soft & rounded
     Lyra,   // boxy & sharp
     Mira,   // ultra dense
+    // New presets
+    Zeta,   // wide sidebar, spacious cards
+    Orion,  // terminal-first, narrow sidebar
+    Aria,   // balanced, centered UI
+    Dawn,   // extra rounded, airy
+    Flux,   // floating panels, large gaps
 }
 
 impl LayoutPreset {
     pub fn label(self) -> &'static str {
         match self {
-            Self::Vega => "Vega",
-            Self::Nova => "Nova",
-            Self::Maia => "Maia",
-            Self::Lyra => "Lyra",
-            Self::Mira => "Mira",
+            Self::Vega  => "Vega",
+            Self::Nova  => "Nova",
+            Self::Maia  => "Maia",
+            Self::Lyra  => "Lyra",
+            Self::Mira  => "Mira",
+            Self::Zeta  => "Zeta",
+            Self::Orion => "Orion",
+            Self::Aria  => "Aria",
+            Self::Dawn  => "Dawn",
+            Self::Flux  => "Flux",
         }
     }
 
     pub fn description(self) -> &'static str {
         match self {
-            Self::Vega => "Clean, neutral & familiar",
-            Self::Nova => "Reduced padding, compact",
-            Self::Maia => "Soft & rounded, generous",
-            Self::Lyra => "Boxy & sharp, mono-friendly",
-            Self::Mira => "Ultra dense, minimal space",
+            Self::Vega  => "Clean, neutral & familiar",
+            Self::Nova  => "Reduced padding, compact",
+            Self::Maia  => "Soft & rounded, generous",
+            Self::Lyra  => "Boxy & sharp, mono-friendly",
+            Self::Mira  => "Ultra dense, minimal space",
+            Self::Zeta  => "Wide sidebar, spacious cards",
+            Self::Orion => "Terminal-first, narrow sidebar",
+            Self::Aria  => "Balanced & centered panels",
+            Self::Dawn  => "Extra rounded, airy spacing",
+            Self::Flux  => "Floating panels, large gaps",
         }
     }
 
     pub fn all() -> &'static [LayoutPreset] {
-        &[Self::Vega, Self::Nova, Self::Maia, Self::Lyra, Self::Mira]
+        &[
+            Self::Vega, Self::Nova, Self::Maia, Self::Lyra, Self::Mira,
+            Self::Zeta, Self::Orion, Self::Aria, Self::Dawn, Self::Flux,
+        ]
     }
 }
 
@@ -159,6 +202,10 @@ pub struct CustomCommand {
     pub description: String, // optional description
 }
 
+fn default_font_size() -> f32 { 13.0 }
+fn default_true() -> bool { true }
+fn default_suggestions() -> bool { true }
+
 #[derive(Serialize, Deserialize, Clone, Debug, Default)]
 pub struct AppConfig {
     pub hosts: Vec<Host>,
@@ -173,6 +220,13 @@ pub struct AppConfig {
     pub layout: LayoutPreset,
     #[serde(default)]
     pub custom_commands: Vec<CustomCommand>,
+    // Terminal appearance
+    #[serde(default = "default_font_size")]
+    pub terminal_font_size: f32,
+    #[serde(default = "default_true")]
+    pub show_borders: bool,
+    #[serde(default = "default_suggestions")]
+    pub suggestions_enabled: bool,
 }
 
 // --- Encryption helpers ---

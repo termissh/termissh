@@ -125,7 +125,10 @@ pub fn run_from_env() {
                 }
                 Ok(n) => {
                     let mut ch = ch_write.lock().unwrap();
-                    let _ = ch.write_all(&buf[..n]);
+                    if ch.write_all(&buf[..n]).is_err() {
+                        r2.store(false, Ordering::Relaxed);
+                        break;
+                    }
                     let _ = ch.flush();
                 }
                 Err(_) => {
@@ -137,6 +140,10 @@ pub fn run_from_env() {
     });
 
     let _ = stdout_thread.join();
-    running.store(false, Ordering::Relaxed);
-    let _ = stdin_thread.join();
+    // SSH connection closed. Exit immediately — stdin_thread may be blocking
+    // indefinitely on stdin.lock().read() (waiting for the next keystroke
+    // from the parent GUI process), so we must not join it or the relay
+    // process will hang until the user types again.
+    let _ = stdin_thread; // suppress unused-variable warning; thread drops when we exit
+    std::process::exit(0);
 }

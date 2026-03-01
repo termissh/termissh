@@ -5,6 +5,7 @@ mod app;
 mod config;
 mod ftp;
 mod i18n;
+mod syspanel;
 mod terminal;
 mod theme;
 mod ui;

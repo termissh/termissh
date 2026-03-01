@@ -7,7 +7,9 @@
       "WebFetch(domain:iced-docs.vercel.app)",
       "WebFetch(domain:raw.githubusercontent.com)",
       "Bash(cargo build:*)",
-      "Bash(cargo doc:*)"
+      "Bash(cargo doc:*)",
+      "Bash(xargs grep:*)",
+      "Bash(cargo check:*)"
     ]
   }
 }
