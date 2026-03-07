@@ -474,7 +474,10 @@ pub struct App {
 impl App {
     pub fn new() -> (Self, Task<Message>) {
         dotenv::dotenv().ok();
-        let config = config::load_config();
+        let mut config = config::load_config();
+        if config.terminal_font_size < 8.0 {
+            config.terminal_font_size = 13.0;
+        }
         let theme = config.theme;
         let api_url = config
             .api_url
@@ -1123,14 +1126,11 @@ impl App {
             Message::FtpPickUploadFile => {
                 return Task::perform(
                     async {
-                        tokio::task::spawn_blocking(|| {
-                            rfd::FileDialog::new()
-                                .set_title("Select File to Upload")
-                                .pick_file()
-                        })
-                        .await
-                        .ok()
-                        .flatten()
+                        rfd::AsyncFileDialog::new()
+                            .set_title("Select File to Upload")
+                            .pick_file()
+                            .await
+                            .map(|handle| handle.path().to_path_buf())
                     },
                     Message::FtpUploadChosen,
                 );

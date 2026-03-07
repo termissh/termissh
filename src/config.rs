@@ -208,7 +208,7 @@ fn default_font_size() -> f32 { 13.0 }
 fn default_true() -> bool { true }
 fn default_suggestions() -> bool { true }
 
-#[derive(Serialize, Deserialize, Clone, Debug, Default)]
+#[derive(Serialize, Deserialize, Clone, Debug)]
 pub struct AppConfig {
     pub hosts: Vec<Host>,
     pub api_key: Option<String>,
@@ -229,6 +229,23 @@ pub struct AppConfig {
     pub show_borders: bool,
     #[serde(default = "default_suggestions")]
     pub suggestions_enabled: bool,
+}
+
+impl Default for AppConfig {
+    fn default() -> Self {
+        Self {
+            hosts: Vec::new(),
+            api_key: None,
+            api_url: None,
+            language: Language::default(),
+            theme: AppTheme::default(),
+            layout: LayoutPreset::default(),
+            custom_commands: Vec::new(),
+            terminal_font_size: default_font_size(),
+            show_borders: default_true(),
+            suggestions_enabled: default_suggestions(),
+        }
+    }
 }
 
 // --- Encryption helpers ---
