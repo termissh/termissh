@@ -6,6 +6,17 @@ pub const SIDEBAR_WIDTH: f32 = 200.0;
 pub const PANEL_GAP: f32 = 5.0;
 pub const CORNER_RADIUS: f32 = 6.0;
 
+/// Helper to build an `iced::Border` that collapses to invisible when
+/// `borders_on` is `false`. Centralized so the show_borders setting can be
+/// threaded through every container, input, and panel.
+pub fn border(color: Color, width: f32, radius: f32, borders_on: bool) -> iced::Border {
+    if borders_on {
+        iced::Border { color, width, radius: radius.into() }
+    } else {
+        iced::Border { color: Color::TRANSPARENT, width: 0.0, radius: radius.into() }
+    }
+}
+
 #[derive(Clone, Copy, Debug)]
 pub struct LayoutConfig {
     pub corner_radius: f32,
@@ -19,7 +30,7 @@ pub struct LayoutConfig {
 pub fn layout(preset: LayoutPreset) -> LayoutConfig {
     match preset {
         LayoutPreset::Vega => LayoutConfig {
-            corner_radius: 6.0,
+            corner_radius: 0.0,
             panel_gap: 5.0,
             sidebar_width: 200.0,
             container_padding: 8,
@@ -27,7 +38,7 @@ pub fn layout(preset: LayoutPreset) -> LayoutConfig {
             spacing: 5.0,
         },
         LayoutPreset::Nova => LayoutConfig {
-            corner_radius: 4.0,
+            corner_radius: 0.0,
             panel_gap: 3.0,
             sidebar_width: 178.0,
             container_padding: 5,
@@ -35,7 +46,7 @@ pub fn layout(preset: LayoutPreset) -> LayoutConfig {
             spacing: 3.0,
         },
         LayoutPreset::Maia => LayoutConfig {
-            corner_radius: 14.0,
+            corner_radius: 0.0,
             panel_gap: 8.0,
             sidebar_width: 220.0,
             container_padding: 14,
@@ -51,7 +62,7 @@ pub fn layout(preset: LayoutPreset) -> LayoutConfig {
             spacing: 4.0,
         },
         LayoutPreset::Mira => LayoutConfig {
-            corner_radius: 2.0,
+            corner_radius: 0.0,
             panel_gap: 2.0,
             sidebar_width: 160.0,
             container_padding: 3,
@@ -61,7 +72,7 @@ pub fn layout(preset: LayoutPreset) -> LayoutConfig {
         // New presets
         LayoutPreset::Zeta => LayoutConfig {
             // Wide sidebar, card-like spacious panels
-            corner_radius: 8.0,
+            corner_radius: 0.0,
             panel_gap: 6.0,
             sidebar_width: 240.0,
             container_padding: 12,
@@ -70,7 +81,7 @@ pub fn layout(preset: LayoutPreset) -> LayoutConfig {
         },
         LayoutPreset::Orion => LayoutConfig {
             // Terminal-first: narrow sidebar, max space for terminal
-            corner_radius: 5.0,
+            corner_radius: 0.0,
             panel_gap: 3.0,
             sidebar_width: 150.0,
             container_padding: 4,
@@ -79,7 +90,7 @@ pub fn layout(preset: LayoutPreset) -> LayoutConfig {
         },
         LayoutPreset::Aria => LayoutConfig {
             // Balanced, symmetrical, clean
-            corner_radius: 10.0,
+            corner_radius: 0.0,
             panel_gap: 6.0,
             sidebar_width: 210.0,
             container_padding: 10,
@@ -88,7 +99,7 @@ pub fn layout(preset: LayoutPreset) -> LayoutConfig {
         },
         LayoutPreset::Dawn => LayoutConfig {
             // Extra rounded, airy, bubble-like
-            corner_radius: 20.0,
+            corner_radius: 0.0,
             panel_gap: 10.0,
             sidebar_width: 215.0,
             container_padding: 16,
@@ -96,7 +107,7 @@ pub fn layout(preset: LayoutPreset) -> LayoutConfig {
             spacing: 10.0,
         },
         LayoutPreset::Flux => LayoutConfig {
-            corner_radius: 12.0,
+            corner_radius: 0.0,
             panel_gap: 12.0,
             sidebar_width: 205.0,
             container_padding: 12,

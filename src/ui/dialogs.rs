@@ -1,8 +1,9 @@
-use iced::widget::{button, column, container, pick_list, row, scrollable, text, text_input, Column};
-use iced::{Element, Length};
+use iced::widget::{button, column, container, pick_list, row, scrollable, text, text_input, Column, Row};
+use iced::{Alignment, Element, Length};
 
-use crate::app::{Message, SecurityFinding, SecuritySeverity};
+use crate::app::Message;
 use crate::config::{AppTheme, CustomCommand, Language, LayoutPreset};
+use crate::icons::{self, IconName};
 use crate::i18n::Texts;
 use crate::theme;
 
@@ -37,6 +38,9 @@ pub struct SettingsForm {
     pub terminal_font_size: f32,
     pub show_borders: bool,
     pub suggestions_enabled: bool,
+    pub auto_reconnect: bool,
+    pub reconnect_interval_secs: u32,
+    pub local_storage_only: bool,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -54,419 +58,750 @@ pub enum DialogState {
     Settings(SettingsForm),
     ConfirmDelete(usize),
     CustomCommands(CustomCommandsForm),
-    SecurityAudit(Vec<SecurityFinding>),
 }
 
-pub fn view_dialog(texts: &Texts, state: &DialogState, theme: AppTheme, lc: theme::LayoutConfig) -> Element<'static, Message> {
+pub fn view_dialog(
+    texts: &Texts,
+    state: &DialogState,
+    theme: AppTheme,
+    lc: theme::LayoutConfig,
+    borders_on: bool,
+) -> Element<'static, Message> {
     let p = theme::palette(theme);
     let cr = lc.corner_radius;
 
-    let dialog_content: Element<'static, Message> = match state {
-        DialogState::NewConnection(form) | DialogState::EditConnection(_, form) => {
-            let title = match state {
-                DialogState::NewConnection(_) => texts.new_server,
-                _ => texts.edit_server,
-            };
-            let form_clone = form.clone();
-            column![
-                text(title).size(16).color(p.text_primary),
-                labeled_input(texts.alias, &form_clone.alias, |v| {
-                    Message::DialogFieldChanged("alias".to_string(), v)
-                }, theme, cr),
-                labeled_input(texts.hostname, &form_clone.hostname, |v| {
-                    Message::DialogFieldChanged("hostname".to_string(), v)
-                }, theme, cr),
-                labeled_input(texts.port, &form_clone.port, |v| {
-                    Message::DialogFieldChanged("port".to_string(), v)
-                }, theme, cr),
-                labeled_input(texts.username, &form_clone.username, |v| {
-                    Message::DialogFieldChanged("username".to_string(), v)
-                }, theme, cr),
-                labeled_input(texts.password, &form_clone.password, |v| {
-                    Message::DialogFieldChanged("password".to_string(), v)
-                }, theme, cr),
-                row![
-                    dialog_button(texts.cancel, Message::CloseDialog, false, theme, cr),
-                    dialog_button(texts.save, Message::SaveDialog, true, theme, cr),
-                ]
-                .spacing(8),
-            ]
-            .spacing(12)
-            .width(Length::Fixed(350.0))
-            .into()
-        }
-
-        DialogState::Settings(form) => {
-            let form_clone = form.clone();
-            let current_theme = form_clone.theme;
-            let current_layout = form_clone.layout;
-            let font_size = form_clone.terminal_font_size;
-            let borders_on = form_clone.show_borders;
-            let suggestions_on = form_clone.suggestions_enabled;
-
-            let theme_picker = pick_list(
-                AppTheme::all(),
-                Some(current_theme),
-                Message::SettingsThemeChanged,
-            )
-            .width(Length::Fill)
-            .style(move |_t: &iced::Theme, status: pick_list::Status| pick_list::Style {
-                text_color: p.text_primary,
-                placeholder_color: p.text_muted,
-                handle_color: p.accent,
-                background: iced::Background::Color(p.bg_tertiary),
-                border: iced::Border {
-                    color: match status {
-                        pick_list::Status::Hovered | pick_list::Status::Opened => p.border_focused,
-                        _ => p.border,
-                    },
-                    width: 1.0,
-                    radius: cr.into(),
-                },
-            });
-
-            let layout_picker = pick_list(
-                LayoutPreset::all(),
-                Some(current_layout),
-                Message::SettingsLayoutChanged,
-            )
-            .width(Length::Fill)
-            .style(move |_t: &iced::Theme, status: pick_list::Status| pick_list::Style {
-                text_color: p.text_primary,
-                placeholder_color: p.text_muted,
-                handle_color: p.accent,
-                background: iced::Background::Color(p.bg_tertiary),
-                border: iced::Border {
-                    color: match status {
-                        pick_list::Status::Hovered | pick_list::Status::Opened => p.border_focused,
-                        _ => p.border,
-                    },
-                    width: 1.0,
-                    radius: cr.into(),
-                },
-            });
-
-            column![
-                text(texts.api_key_settings).size(16).color(p.text_primary),
-                labeled_input(texts.api_key, &form_clone.api_key, |v| {
-                    Message::DialogFieldChanged("api_key".to_string(), v)
-                }, theme, cr),
-                labeled_input(texts.api_url, &form_clone.api_url, |v| {
-                    Message::DialogFieldChanged("api_url".to_string(), v)
-                }, theme, cr),
-                column![
-                    text("Theme").size(11).color(p.text_secondary),
-                    theme_picker,
-                ].spacing(4),
-                column![
-                    text("Layout").size(11).color(p.text_secondary),
-                    layout_picker,
-                ].spacing(4),
-                text("Language").size(11).color(p.text_secondary),
-                row![
-                    select_button("TR", matches!(form_clone.language, Language::Turkish),
-                        Message::SettingsLanguageChanged(Language::Turkish), theme, cr),
-                    select_button("EN", matches!(form_clone.language, Language::English),
-                        Message::SettingsLanguageChanged(Language::English), theme, cr),
-                ]
-                .spacing(8),
-                // Terminal appearance
-                text("Terminal Appearance").size(13).color(p.text_primary),
-                column![
-                    text("Default Font Size").size(11).color(p.text_secondary),
-                    row![
-                        select_button("A-", false,
-                            Message::SettingsFontSizeChanged(font_size - 1.0), theme, cr),
-                        container(
-                            text(format!("{:.0}px", font_size)).size(11).color(p.text_primary)
-                        )
-                        .padding([4, 10])
-                        .style(move |_: &iced::Theme| container::Style {
-                            background: Some(iced::Background::Color(p.bg_tertiary)),
-                            border: iced::Border { color: p.border, width: 1.0, radius: cr.into() },
-                            ..Default::default()
-                        }),
-                        select_button("A+", false,
-                            Message::SettingsFontSizeChanged(font_size + 1.0), theme, cr),
-                    ].spacing(6).align_y(iced::Alignment::Center),
-                ].spacing(4),
-                column![
-                    text("Panel Borders").size(11).color(p.text_secondary),
-                    row![
-                        select_button("Bordered", borders_on,
-                            Message::SettingsShowBordersChanged(true), theme, cr),
-                        select_button("Borderless", !borders_on,
-                            Message::SettingsShowBordersChanged(false), theme, cr),
-                    ].spacing(6),
-                ].spacing(4),
-                column![
-                    text("Command Suggestions").size(11).color(p.text_secondary),
-                    row![
-                        select_button("Enabled", suggestions_on,
-                            Message::SettingsSuggestionsChanged(true), theme, cr),
-                        select_button("Disabled", !suggestions_on,
-                            Message::SettingsSuggestionsChanged(false), theme, cr),
-                    ].spacing(6),
-                ].spacing(4),
-                row![
-                    dialog_button(texts.cancel, Message::CloseDialog, false, theme, cr),
-                    dialog_button(texts.save, Message::SaveSettings, true, theme, cr),
-                ]
-                .spacing(8),
-            ]
-            .spacing(12)
-            .width(Length::Fixed(420.0))
-            .into()
-        }
-
-        DialogState::ConfirmDelete(idx) => {
-            let idx = *idx;
-            column![
-                text(texts.delete_confirm).size(14).color(p.text_primary),
-                row![
-                    dialog_button(texts.cancel, Message::CloseDialog, false, theme, cr),
-                    dialog_button(texts.delete, Message::ConfirmDelete(idx), false, theme, cr),
-                ]
-                .spacing(8),
-            ]
-            .spacing(16)
-            .width(Length::Fixed(350.0))
-            .into()
-        }
-
-        DialogState::CustomCommands(form) => {
-            let form_clone = form.clone();
-
-            // Existing commands list
-            let mut list_col = Column::new().spacing(4);
-            if form_clone.commands.is_empty() {
-                list_col = list_col.push(
-                    text("No custom commands yet. Add one below.")
-                        .size(11)
-                        .color(p.text_muted),
-                );
-            }
-            for (idx, cmd) in form_clone.commands.iter().enumerate() {
-                let trigger_label = cmd.trigger.clone();
-                let desc_label = if cmd.description.is_empty() {
-                    cmd.script.chars().take(40).collect::<String>()
-                } else {
-                    cmd.description.clone()
-                };
-                let row_content = row![
-                    text(trigger_label).size(11).color(p.accent).width(Length::Fixed(90.0)),
-                    text(desc_label).size(10).color(p.text_muted).width(Length::Fill),
-                    button(text("✕").size(10).color(p.danger))
-                        .on_press(Message::DeleteCustomCommand(idx))
-                        .padding([1, 6])
-                        .style(move |_t: &iced::Theme, s: button::Status| button::Style {
-                            background: Some(iced::Background::Color(match s {
-                                button::Status::Hovered => p.bg_hover,
-                                _ => iced::Color::TRANSPARENT,
-                            })),
-                            text_color: p.danger,
-                            border: iced::Border {
-                                color: p.border,
-                                width: 1.0,
-                                radius: cr.into(),
-                            },
-                            ..Default::default()
-                        }),
-                ]
-                .spacing(6)
-                .align_y(iced::Alignment::Center);
-                list_col = list_col.push(
-                    container(row_content)
-                        .padding([3, 6])
-                        .width(Length::Fill)
-                        .style(move |_t: &iced::Theme| container::Style {
-                            background: Some(iced::Background::Color(p.bg_tertiary)),
-                            border: iced::Border {
-                                color: p.border,
-                                width: 1.0,
-                                radius: cr.into(),
-                            },
-                            ..Default::default()
-                        }),
-                );
-            }
-
-            // Scrollable list
-            let list_scroll = scrollable(list_col)
-                .height(Length::Fixed(180.0));
-
-            // Add new command form
-            let add_form = column![
-                text("Add Custom Command").size(12).color(p.text_secondary),
-                labeled_input(
-                    "Trigger (e.g. -runtest)",
-                    &form_clone.new_trigger,
-                    |v| Message::DialogFieldChanged("trigger".to_string(), v),
-                    theme, cr,
-                ),
-                labeled_input(
-                    "Script (e.g. cd /app && npm test)",
-                    &form_clone.new_script,
-                    |v| Message::DialogFieldChanged("script".to_string(), v),
-                    theme, cr,
-                ),
-                labeled_input(
-                    "Description (optional)",
-                    &form_clone.new_description,
-                    |v| Message::DialogFieldChanged("description".to_string(), v),
-                    theme, cr,
-                ),
-                button(text("+ Add").size(11).color(p.text_primary))
-                    .on_press(Message::AddCustomCommand)
-                    .padding([4, 14])
-                    .style(move |_t: &iced::Theme, s: button::Status| button::Style {
-                        background: Some(iced::Background::Color(match s {
-                            button::Status::Hovered => p.accent_hover,
-                            _ => p.accent,
-                        })),
-                        text_color: p.text_primary,
-                        border: iced::Border {
-                            color: p.border,
-                            width: 1.0,
-                            radius: cr.into(),
-                        },
-                        ..Default::default()
-                    }),
-            ]
-            .spacing(8);
-
-            column![
-                text("Custom Commands (Aliases)").size(16).color(p.text_primary),
-                text("Type a trigger (e.g. -runtest) in the terminal and press Enter to execute the script.")
-                    .size(10)
-                    .color(p.text_muted),
-                list_scroll,
-                add_form,
-                row![
-                    dialog_button(texts.cancel, Message::CloseDialog, false, theme, cr),
-                    dialog_button(texts.save, Message::SaveCustomCommands, true, theme, cr),
-                ]
-                .spacing(8),
-            ]
-            .spacing(12)
-            .width(Length::Fixed(480.0))
-            .into()
-        }
-
-        DialogState::SecurityAudit(findings) => {
-            let findings_clone = findings.clone();
-            let mut findings_col = Column::new().spacing(6);
-
-            for finding in &findings_clone {
-                let sev_color = match finding.severity {
-                    SecuritySeverity::Critical => iced::Color::from_rgb8(220, 38, 38),
-                    SecuritySeverity::High     => iced::Color::from_rgb8(234, 88, 12),
-                    SecuritySeverity::Medium   => iced::Color::from_rgb8(202, 138, 4),
-                    SecuritySeverity::Low      => iced::Color::from_rgb8(37, 99, 235),
-                    SecuritySeverity::Info     => p.text_muted,
-                };
-                let badge_text = format!(
-                    "{}  {}",
-                    finding.severity.label(),
-                    finding.category
-                );
-                let finding_row = column![
-                    text(badge_text).size(9).color(sev_color),
-                    text(finding.message.clone()).size(11).color(p.text_primary),
-                ]
-                .spacing(2);
-
-                findings_col = findings_col.push(
-                    container(finding_row)
-                        .padding([6, 8])
-                        .width(Length::Fill)
-                        .style(move |_t: &iced::Theme| container::Style {
-                            background: Some(iced::Background::Color(p.bg_tertiary)),
-                            border: iced::Border {
-                                color: sev_color,
-                                width: 1.0,
-                                radius: cr.into(),
-                            },
-                            ..Default::default()
-                        }),
-                );
-            }
-
-            let count_critical = findings_clone
-                .iter()
-                .filter(|f| f.severity == SecuritySeverity::Critical || f.severity == SecuritySeverity::High)
-                .count();
-            let summary = if count_critical == 0 {
-                "No high-severity issues found.".to_string()
-            } else {
-                format!("{} high/critical issue(s) require attention.", count_critical)
-            };
-            let summary_color = if count_critical == 0 { p.success } else { p.danger };
-
-            column![
-                text("Security Audit").size(16).color(p.text_primary),
-                text(summary).size(11).color(summary_color),
-                scrollable(findings_col).height(Length::Fixed(340.0)),
-                dialog_button(texts.cancel, Message::CloseDialog, false, theme, cr),
-            ]
-            .spacing(12)
-            .width(Length::Fixed(500.0))
-            .into()
-        }
+    let (title, title_icon, dialog_width, body) = match state {
+        DialogState::NewConnection(form) => (
+            texts.new_server,
+            IconName::Plus,
+            420.0_f32,
+            connection_form_body(texts, form, theme, cr, borders_on),
+        ),
+        DialogState::EditConnection(_, form) => (
+            texts.edit_server,
+            IconName::Pencil,
+            420.0_f32,
+            connection_form_body(texts, form, theme, cr, borders_on),
+        ),
+        DialogState::Settings(form) => (
+            "Settings",
+            IconName::Settings,
+            480.0_f32,
+            settings_body(texts, form, theme, cr, borders_on),
+        ),
+        DialogState::ConfirmDelete(_) => (
+            texts.delete_confirm,
+            IconName::Trash,
+            360.0_f32,
+            confirm_delete_body(texts, state, theme, cr),
+        ),
+        DialogState::CustomCommands(form) => (
+            "Custom Commands",
+            IconName::Command,
+            520.0_f32,
+            custom_commands_body(texts, form, theme, cr, borders_on),
+        ),
     };
 
-    let card = container(
-        container(dialog_content)
-            .padding(24)
-            .style(move |_t: &iced::Theme| container::Style {
-                background: Some(iced::Background::Color(p.bg_secondary)),
+    let body = body;
+
+    let header = modal_header(title, title_icon, p, cr);
+    let footer = modal_footer(texts, state, theme, cr);
+
+    let dialog_inner = column![header, body, footer]
+        .spacing(0)
+        .width(Length::Fixed(dialog_width));
+
+    let card = container(dialog_inner).padding(20).style(move |_t: &iced::Theme| {
+        // Frosted-glass feel: slightly translucent bg + accent border + soft deep shadow
+        container::Style {
+            background: Some(iced::Background::Color(iced::Color {
+                a: 0.97,
+                ..p.bg_secondary
+            })),
+            border: iced::Border {
+                color: iced::Color {
+                    a: 0.6,
+                    ..p.border_focused
+                },
+                width: 1.0,
+                radius: 12.0.into(),
+            },
+            shadow: iced::Shadow {
+                color: iced::Color::from_rgba(0.0, 0.0, 0.0, 0.55),
+                offset: iced::Vector::new(0.0, 16.0),
+                blur_radius: 40.0,
+            },
+            ..Default::default()
+        }
+    });
+
+    // Scrim with deeper, slightly warm-black tint to imply frosted glass behind the modal
+    let scrim = container(card)
+        .width(Length::Fill)
+        .height(Length::Fill)
+        .center_x(Length::Fill)
+        .center_y(Length::Fill)
+        .style(move |_t: &iced::Theme| container::Style {
+            background: Some(iced::Background::Color(iced::Color::from_rgba(
+                0.04, 0.05, 0.07, 0.62,
+            ))),
+            ..Default::default()
+        });
+
+    scrim.into()
+}
+
+// ── Header (title row + close button) ──────────────────────────────────
+fn modal_header(title: &'static str, icon: IconName, p: theme::Palette, cr: f32) -> Element<'static, Message> {
+    let title_text = text(title).size(14).color(p.text_primary).font(iced::Font {
+        family: iced::font::Family::Name("Segoe UI"),
+        weight: iced::font::Weight::Semibold,
+        ..iced::Font::DEFAULT
+    });
+
+    let title_row = row![
+        icons::icon(icon, 16.0, p.accent),
+        title_text,
+    ]
+    .spacing(9)
+    .align_y(Alignment::Center);
+
+    let close = button(
+        container(icons::icon(IconName::Close, 12.0, p.text_secondary))
+            .center_x(Length::Fill)
+            .center_y(Length::Fill)
+            .width(Length::Fill)
+            .height(Length::Fill),
+    )
+    .on_press(Message::CloseDialog)
+    .padding(0)
+    .width(Length::Fixed(24.0))
+    .height(Length::Fixed(24.0))
+    .style(move |_t: &iced::Theme, status: button::Status| {
+        let hovered = matches!(status, button::Status::Hovered);
+        button::Style {
+            background: Some(iced::Background::Color(if hovered {
+                p.bg_hover
+            } else {
+                iced::Color::TRANSPARENT
+            })),
+            text_color: if hovered { p.text_primary } else { p.text_secondary },
+            border: iced::Border {
+                color: if hovered { p.border_focused } else { p.border },
+                width: 1.0,
+                radius: 6.0.into(),
+            },
+            ..Default::default()
+        }
+    });
+
+    container(
+        row![title_row, iced::widget::horizontal_space(), close]
+            .align_y(Alignment::Center)
+            .width(Length::Fill),
+    )
+    .width(Length::Fill)
+    .padding(iced::Padding { top: 0.0, right: 4.0, bottom: 10.0, left: 4.0 })
+    .style(move |_t: &iced::Theme| container::Style {
+        background: None,
+        border: iced::Border {
+            color: p.border,
+            width: 0.0,
+            radius: 0.0.into(),
+        },
+        ..Default::default()
+    })
+    .into()
+}
+
+// ── Footer (Cancel / Save row) ────────────────────────────────────────
+fn modal_footer(
+    texts: &Texts,
+    state: &DialogState,
+    theme: AppTheme,
+    cr: f32,
+) -> Element<'static, Message> {
+    let p = theme::palette(theme);
+    let (save_msg, save_label) = match state {
+        DialogState::NewConnection(_) | DialogState::EditConnection(_, _) => {
+            (Message::SaveDialog, texts.save)
+        }
+        DialogState::Settings(_) => (Message::SaveSettings, texts.save),
+        DialogState::ConfirmDelete(idx) => (Message::ConfirmDelete(*idx), texts.delete),
+        DialogState::CustomCommands(_) => (Message::SaveCustomCommands, texts.save),
+    };
+
+    let cancel = button(text(texts.cancel).size(11).color(p.text_secondary))
+        .on_press(Message::CloseDialog)
+        .padding([7, 18])
+        .style(move |_t: &iced::Theme, status: button::Status| {
+            button::Style {
+                background: Some(iced::Background::Color(match status {
+                    button::Status::Hovered => p.bg_hover,
+                    _ => iced::Color::TRANSPARENT,
+                })),
+                text_color: p.text_secondary,
                 border: iced::Border {
                     color: p.border,
                     width: 1.0,
-                    radius: cr.into(),
+                    radius: 6.0.into(),
+                },
+                ..Default::default()
+            }
+        });
+
+    let save = button(
+        row![
+            icons::icon(IconName::Check, 12.0, p.text_primary),
+            text(save_label).size(11).color(p.text_primary),
+        ]
+        .spacing(6)
+        .align_y(Alignment::Center),
+    )
+    .on_press(save_msg)
+    .padding([7, 18])
+    .style(move |_t: &iced::Theme, status: button::Status| {
+        let bg = match status {
+            button::Status::Hovered => p.accent_hover,
+            _ => p.accent,
+        };
+        button::Style {
+            background: Some(iced::Background::Color(bg)),
+            text_color: p.text_primary,
+            border: iced::Border {
+                color: iced::Color::TRANSPARENT,
+                width: 0.0,
+                radius: 6.0.into(),
+            },
+            ..Default::default()
+        }
+    });
+
+    let footer = row![iced::widget::horizontal_space(), cancel, save]
+        .spacing(6)
+        .align_y(Alignment::Center)
+        .width(Length::Fill);
+
+    container(footer)
+        .width(Length::Fill)
+        .padding(iced::Padding { top: 10.0, right: 4.0, bottom: 0.0, left: 4.0 })
+        .style(move |_t: &iced::Theme| container::Style {
+            background: None,
+            ..Default::default()
+        })
+        .into()
+}
+
+// ── Section card (icon + title + body) ─────────────────────────────────
+fn section_card(
+    icon: IconName,
+    title: &'static str,
+    body: Element<'static, Message>,
+    p: theme::Palette,
+) -> Element<'static, Message> {
+    let header_row = row![
+        icons::icon(icon, 12.0, p.accent),
+        text(title).size(11).color(p.text_secondary).font(iced::Font {
+            family: iced::font::Family::Name("Segoe UI"),
+            weight: iced::font::Weight::Semibold,
+            ..iced::Font::DEFAULT
+        }),
+    ]
+    .spacing(7)
+    .align_y(Alignment::Center);
+
+    let inner = column![header_row, body]
+        .spacing(7)
+        .width(Length::Fill)
+        .padding([10, 12]);
+
+    container(inner)
+        .width(Length::Fill)
+        .style(move |_t: &iced::Theme| container::Style {
+            background: Some(iced::Background::Color(p.bg_tertiary)),
+            border: iced::Border {
+                color: iced::Color {
+                    a: 0.5,
+                    ..p.border
+                },
+                width: 1.0,
+                radius: 8.0.into(),
+            },
+            ..Default::default()
+        })
+        .into()
+}
+
+// ── Body builders ─────────────────────────────────────────────────────
+
+fn connection_form_body(
+    _texts: &Texts,
+    form: &ConnectionForm,
+    theme: AppTheme,
+    cr: f32,
+    _borders_on: bool,
+) -> Element<'static, Message> {
+    let p = theme::palette(theme);
+    let form_clone = form.clone();
+
+    let identity_card = section_card(
+        IconName::Hash,
+        "Identity",
+        column![
+            labeled_input("Alias", &form_clone.alias, |v| {
+                Message::DialogFieldChanged("alias".to_string(), v)
+            }, theme, cr),
+            labeled_input("Username", &form_clone.username, |v| {
+                Message::DialogFieldChanged("username".to_string(), v)
+            }, theme, cr),
+        ]
+        .spacing(6)
+        .width(Length::Fill)
+        .into(),
+        p,
+    );
+
+    let server_card = section_card(
+        IconName::Server,
+        "Server",
+        column![
+            labeled_input("Hostname", &form_clone.hostname, |v| {
+                Message::DialogFieldChanged("hostname".to_string(), v)
+            }, theme, cr),
+            labeled_input("Port", &form_clone.port, |v| {
+                Message::DialogFieldChanged("port".to_string(), v)
+            }, theme, cr),
+        ]
+        .spacing(6)
+        .width(Length::Fill)
+        .into(),
+        p,
+    );
+
+    let auth_card = section_card(
+        IconName::SquareAsterisk,
+        "Authentication",
+        column![labeled_input("Password", &form_clone.password, |v| {
+            Message::DialogFieldChanged("password".to_string(), v)
+        }, theme, cr),]
+        .spacing(4)
+        .width(Length::Fill)
+        .into(),
+        p,
+    );
+
+    column![identity_card, server_card, auth_card]
+        .spacing(7)
+        .width(Length::Fill)
+        .into()
+}
+
+fn settings_body(
+    _texts: &Texts,
+    form: &SettingsForm,
+    theme: AppTheme,
+    cr: f32,
+    _borders_on: bool,
+) -> Element<'static, Message> {
+    let p = theme::palette(theme);
+    let form_clone = form.clone();
+    let font_size = form_clone.terminal_font_size;
+    let borders_on = form_clone.show_borders;
+    let suggestions_on = form_clone.suggestions_enabled;
+    let auto_reconnect = form_clone.auto_reconnect;
+    let reconnect_interval = form_clone.reconnect_interval_secs;
+    let local_only = form_clone.local_storage_only;
+
+    let theme_picker = pick_list(
+        AppTheme::all(),
+        Some(form_clone.theme),
+        Message::SettingsThemeChanged,
+    )
+    .width(Length::Fill)
+    .style(move |_t: &iced::Theme, status: pick_list::Status| pick_list::Style {
+        text_color: p.text_primary,
+        placeholder_color: p.text_muted,
+        handle_color: p.accent,
+        background: iced::Background::Color(p.bg_secondary),
+        border: iced::Border {
+            color: match status {
+                pick_list::Status::Hovered | pick_list::Status::Opened => p.border_focused,
+                _ => p.border,
+            },
+            width: 1.0,
+            radius: 6.0.into(),
+        },
+    });
+
+    let layout_picker = pick_list(
+        LayoutPreset::all(),
+        Some(form_clone.layout),
+        Message::SettingsLayoutChanged,
+    )
+    .width(Length::Fill)
+    .style(move |_t: &iced::Theme, status: pick_list::Status| pick_list::Style {
+        text_color: p.text_primary,
+        placeholder_color: p.text_muted,
+        handle_color: p.accent,
+        background: iced::Background::Color(p.bg_secondary),
+        border: iced::Border {
+            color: match status {
+                pick_list::Status::Hovered | pick_list::Status::Opened => p.border_focused,
+                _ => p.border,
+            },
+            width: 1.0,
+            radius: 6.0.into(),
+        },
+    });
+
+    let lang_row = row![
+        select_button("Türkçe", matches!(form_clone.language, Language::Turkish),
+            Message::SettingsLanguageChanged(Language::Turkish), theme, cr),
+        select_button("English", matches!(form_clone.language, Language::English),
+            Message::SettingsLanguageChanged(Language::English), theme, cr),
+    ]
+    .spacing(8);
+
+    // ── Sections ──
+    let api_card = section_card(
+        IconName::Server,
+        "API Sync",
+        column![
+            labeled_input("API Key", &form_clone.api_key, |v| {
+                Message::DialogFieldChanged("api_key".to_string(), v)
+            }, theme, cr),
+            labeled_input("API URL", &form_clone.api_url, |v| {
+                Message::DialogFieldChanged("api_url".to_string(), v)
+            }, theme, cr),
+        ]
+        .spacing(6)
+        .width(Length::Fill)
+        .into(),
+        p,
+    );
+
+    let appearance_card = section_card(
+        IconName::Sun,
+        "Appearance",
+        column![
+            column![text("Theme").size(10).color(p.text_muted), theme_picker].spacing(4).width(Length::Fill),
+            column![text("Layout").size(10).color(p.text_muted), layout_picker].spacing(4).width(Length::Fill),
+            column![text("Language").size(10).color(p.text_muted), lang_row].spacing(4).width(Length::Fill),
+        ]
+        .spacing(7)
+        .width(Length::Fill)
+        .into(),
+        p,
+    );
+
+    let terminal_card = section_card(
+        IconName::Terminal,
+        "Terminal",
+        column![
+            column![text("Default Font Size").size(10).color(p.text_muted),
+                row![
+                    select_button("A−", false, Message::SettingsFontSizeChanged(font_size - 1.0), theme, cr),
+                    container(text(format!("{:.0}px", font_size)).size(11).color(p.text_primary))
+                        .padding([5, 12])
+                        .style(move |_: &iced::Theme| container::Style {
+                            background: Some(iced::Background::Color(p.bg_secondary)),
+                            border: iced::Border { color: p.border, width: 1.0, radius: 6.0.into() },
+                            ..Default::default()
+                        }),
+                    select_button("A+", false, Message::SettingsFontSizeChanged(font_size + 1.0), theme, cr),
+                ]
+                .spacing(6)
+                .align_y(Alignment::Center),
+            ]
+            .spacing(4)
+            .width(Length::Fill),
+            column![text("Panel Borders").size(10).color(p.text_muted),
+                row![
+                    select_button("Bordered", borders_on, Message::SettingsShowBordersChanged(true), theme, cr),
+                    select_button("Borderless", !borders_on, Message::SettingsShowBordersChanged(false), theme, cr),
+                ]
+                .spacing(6),
+            ]
+            .spacing(4)
+            .width(Length::Fill),
+        ]
+        .spacing(7)
+        .width(Length::Fill)
+        .into(),
+        p,
+    );
+
+    let suggestions_card = section_card(
+        IconName::Search,
+        "Suggestions",
+        column![column![text("Command Suggestions").size(10).color(p.text_muted),
+            row![
+                select_button("Enabled", suggestions_on, Message::SettingsSuggestionsChanged(true), theme, cr),
+                select_button("Disabled", !suggestions_on, Message::SettingsSuggestionsChanged(false), theme, cr),
+            ]
+            .spacing(6),
+        ]
+        .spacing(4)
+        .width(Length::Fill),]
+        .spacing(4)
+        .width(Length::Fill)
+        .into(),
+        p,
+    );
+
+    let connection_card = section_card(
+        IconName::Cable,
+        "Connection",
+        column![
+            column![text("Auto-Reconnect on Drop").size(10).color(p.text_muted),
+                row![
+                    select_button("Enabled", auto_reconnect, Message::SettingsAutoReconnectChanged(true), theme, cr),
+                    select_button("Disabled", !auto_reconnect, Message::SettingsAutoReconnectChanged(false), theme, cr),
+                ]
+                .spacing(6),
+            ]
+            .spacing(4)
+            .width(Length::Fill),
+            column![text("Reconnect Interval").size(10).color(p.text_muted),
+                row![
+                    select_button("3s",  reconnect_interval == 3,  Message::SettingsReconnectIntervalChanged(3),  theme, cr),
+                    select_button("5s",  reconnect_interval == 5,  Message::SettingsReconnectIntervalChanged(5),  theme, cr),
+                    select_button("10s", reconnect_interval == 10, Message::SettingsReconnectIntervalChanged(10), theme, cr),
+                    select_button("30s", reconnect_interval == 30, Message::SettingsReconnectIntervalChanged(30), theme, cr),
+                ]
+                .spacing(6),
+            ]
+            .spacing(4)
+            .width(Length::Fill),
+        ]
+        .spacing(7)
+        .width(Length::Fill)
+        .into(),
+        p,
+    );
+
+    let storage_card = section_card(
+        IconName::Power,
+        "Storage",
+        column![
+            text("Keep All SSH Info Locally")
+                .size(11)
+                .color(p.text_primary),
+            text("When enabled, hosts and credentials are stored only on this device and never synced to the API.")
+                .size(10)
+                .color(p.text_muted),
+            row![
+                select_button("Local Only", local_only, Message::SettingsLocalStorageChanged(true), theme, cr),
+                select_button("Allow Sync", !local_only, Message::SettingsLocalStorageChanged(false), theme, cr),
+            ]
+            .spacing(6),
+        ]
+        .spacing(6)
+        .width(Length::Fill)
+        .into(),
+        p,
+    );
+
+    column![
+        api_card,
+        appearance_card,
+        terminal_card,
+        suggestions_card,
+        connection_card,
+        storage_card,
+    ]
+    .spacing(10)
+    .width(Length::Fill)
+    .into()
+}
+
+fn confirm_delete_body(
+    _texts: &Texts,
+    _state: &DialogState,
+    _theme: AppTheme,
+    _cr: f32,
+) -> Element<'static, Message> {
+    // The actual content is just a small subtitle, body is minimal.
+    Element::from(
+        container(text(""))
+            .width(Length::Fill)
+            .height(Length::Fixed(8.0)),
+    )
+}
+
+fn custom_commands_body(
+    _texts: &Texts,
+    form: &CustomCommandsForm,
+    theme: AppTheme,
+    cr: f32,
+    _borders_on: bool,
+) -> Element<'static, Message> {
+    let p = theme::palette(theme);
+    let form_clone = form.clone();
+
+    let mut list_col = Column::new().spacing(4);
+    if form_clone.commands.is_empty() {
+        list_col = list_col.push(
+            row![
+                icons::icon(IconName::Info, 11.0, p.text_muted),
+                text("No custom commands yet — add one below.")
+                    .size(10)
+                    .color(p.text_muted),
+            ]
+            .spacing(6)
+            .align_y(Alignment::Center)
+            .padding([4, 4]),
+        );
+    }
+    for (idx, cmd) in form_clone.commands.iter().enumerate() {
+        let trigger_label = cmd.trigger.clone();
+        let desc_label = if cmd.description.is_empty() {
+            cmd.script.chars().take(40).collect::<String>()
+        } else {
+            cmd.description.clone()
+        };
+        let row_content = row![
+            icons::icon(IconName::SquareAsterisk, 10.0, p.accent),
+            text(trigger_label).size(11).color(p.accent).width(Length::Fixed(90.0)),
+            text(desc_label).size(10).color(p.text_muted).width(Length::Fill),
+            button(
+                container(icons::icon(IconName::Close, 9.0, p.text_muted))
+                    .center_x(Length::Fill)
+                    .center_y(Length::Fill)
+                    .width(Length::Fill)
+                    .height(Length::Fill),
+            )
+            .on_press(Message::DeleteCustomCommand(idx))
+            .padding(0)
+            .width(Length::Fixed(20.0))
+            .height(Length::Fixed(20.0))
+            .style(move |_t: &iced::Theme, s: button::Status| button::Style {
+                background: Some(iced::Background::Color(match s {
+                    button::Status::Hovered => p.danger,
+                    _ => iced::Color::TRANSPARENT,
+                })),
+                text_color: if matches!(s, button::Status::Hovered) { p.bg_primary } else { p.text_muted },
+                border: iced::Border {
+                    color: p.border,
+                    width: 1.0,
+                    radius: 4.0.into(),
                 },
                 ..Default::default()
             }),
-    )
-    .width(Length::Fill)
-    .height(Length::Fill)
-    .center_x(Length::Fill)
-    .center_y(Length::Fill)
-    .style(move |_t: &iced::Theme| container::Style {
-        background: Some(iced::Background::Color(iced::Color::from_rgba(
-            0.0, 0.0, 0.0, 0.6,
-        ))),
-        ..Default::default()
-    });
+        ]
+        .spacing(6)
+        .align_y(Alignment::Center);
+        list_col = list_col.push(
+            container(row_content)
+                .padding([4, 8])
+                .width(Length::Fill)
+                .style(move |_t: &iced::Theme| container::Style {
+                    background: Some(iced::Background::Color(p.bg_tertiary)),
+                    border: iced::Border {
+                        color: p.border,
+                        width: 1.0,
+                        radius: 4.0.into(),
+                    },
+                    ..Default::default()
+                }),
+        );
+    }
 
-    card.into()
+    let list_scroll: Element<'static, Message> = scrollable(list_col).height(Length::Fixed(150.0)).into();
+
+    let add_form = section_card(
+        IconName::Plus,
+        "Add Custom Command",
+        column![
+            labeled_input(
+                "Trigger (e.g. -runtest)",
+                &form_clone.new_trigger,
+                |v| Message::DialogFieldChanged("trigger".to_string(), v),
+                theme, cr,
+            ),
+            labeled_input(
+                "Script (e.g. cd /app && npm test)",
+                &form_clone.new_script,
+                |v| Message::DialogFieldChanged("script".to_string(), v),
+                theme, cr,
+            ),
+            labeled_input(
+                "Description (optional)",
+                &form_clone.new_description,
+                |v| Message::DialogFieldChanged("description".to_string(), v),
+                theme, cr,
+            ),
+            button(
+                row![
+                    icons::icon(IconName::Plus, 11.0, p.text_primary),
+                    text("Add Command").size(11).color(p.text_primary),
+                ]
+                .spacing(6)
+                .align_y(Alignment::Center),
+            )
+            .on_press(Message::AddCustomCommand)
+            .padding([6, 14])
+            .style(move |_t: &iced::Theme, s: button::Status| button::Style {
+                background: Some(iced::Background::Color(match s {
+                    button::Status::Hovered => p.accent_hover,
+                    _ => p.accent,
+                })),
+                text_color: p.text_primary,
+                border: iced::Border {
+                    color: iced::Color::TRANSPARENT,
+                    width: 0.0,
+                    radius: 6.0.into(),
+                },
+                ..Default::default()
+            }),
+        ]
+        .spacing(6)
+        .width(Length::Fill)
+        .into(),
+        p,
+    );
+
+    let list_section = section_card(
+        IconName::Command,
+        "Your Commands",
+        list_scroll,
+        p,
+    );
+
+    column![list_section, add_form]
+        .spacing(7)
+        .width(Length::Fill)
+        .into()
 }
 
-fn labeled_input<'a>(
+// ── Form helpers ─────────────────────────────────────────────────────
+
+fn labeled_input(
     label: &'static str,
     value: &str,
     on_input: impl Fn(String) -> Message + 'static,
     theme: AppTheme,
     cr: f32,
-) -> Column<'a, Message> {
+) -> Column<'static, Message> {
     let p = theme::palette(theme);
     let value_owned = value.to_string();
 
     column![
-        text(label).size(11).color(p.text_secondary),
+        text(label).size(10).color(p.text_muted),
         text_input("", &value_owned)
             .on_input(on_input)
-            .padding(8)
-            .size(13)
+            .padding(5)
+            .size(11)
             .style(move |_t: &iced::Theme, status: text_input::Status| text_input::Style {
-                background: iced::Background::Color(p.bg_tertiary),
+                background: iced::Background::Color(p.bg_secondary),
                 border: iced::Border {
                     color: match status {
-                        text_input::Status::Focused => p.border_focused,
+                        text_input::Status::Focused => p.accent,
                         _ => p.border,
                     },
                     width: 1.0,
-                    radius: cr.into(),
+                    radius: 6.0.into(),
                 },
                 icon: p.text_muted,
                 placeholder: p.text_muted,
@@ -486,7 +821,7 @@ fn dialog_button(
 ) -> Element<'static, Message> {
     let p = theme::palette(theme);
 
-    button(text(label).size(12).color(p.text_primary))
+    button(text(label).size(11).color(p.text_primary))
         .on_press(msg)
         .padding([6, 16])
         .style(move |_t: &iced::Theme, status: button::Status| {
@@ -524,9 +859,9 @@ fn select_button(
 ) -> Element<'static, Message> {
     let p = theme::palette(theme);
 
-    button(text(label).size(12).color(p.text_primary))
+    button(text(label).size(11).color(p.text_primary))
         .on_press(msg)
-        .padding([6, 12])
+        .padding([5, 12])
         .style(move |_t: &iced::Theme, status: button::Status| {
             let bg = if selected {
                 match status {
@@ -536,16 +871,16 @@ fn select_button(
             } else {
                 match status {
                     button::Status::Hovered => p.bg_hover,
-                    _ => p.bg_tertiary,
+                    _ => p.bg_secondary,
                 }
             };
             button::Style {
                 background: Some(iced::Background::Color(bg)),
                 text_color: p.text_primary,
                 border: iced::Border {
-                    color: p.border,
+                    color: if selected { iced::Color::TRANSPARENT } else { p.border },
                     width: 1.0,
-                    radius: cr.into(),
+                    radius: 6.0.into(),
                 },
                 ..Default::default()
             }

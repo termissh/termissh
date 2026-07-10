@@ -5,6 +5,7 @@ mod app;
 mod config;
 mod ftp;
 mod i18n;
+mod icons;
 mod syspanel;
 mod terminal;
 mod theme;
@@ -16,7 +17,7 @@ use iced::Font;
 fn ui_font() -> Font {
     Font {
         family: iced::font::Family::Name("Segoe UI"),
-        weight: iced::font::Weight::Light,
+        weight: iced::font::Weight::Normal,
         ..Font::DEFAULT
     }
 }
@@ -34,6 +35,10 @@ fn main() -> iced::Result {
     iced::application(App::title, App::update, App::view)
         .window(iced::window::Settings {
             icon: app_icon(),
+            size: iced::Size::new(1180.0, 740.0),
+            min_size: Some(iced::Size::new(820.0, 520.0)),
+            decorations: false,
+            resizable: true,
             ..Default::default()
         })
         .default_font(ui_font())

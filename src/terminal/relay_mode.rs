@@ -1,6 +1,6 @@
 use std::env;
 use std::io::{self, Read, Write};
-use std::net::TcpStream;
+use std::net::{TcpStream, ToSocketAddrs};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::thread;
@@ -26,13 +26,23 @@ pub fn run_from_env() {
     let user = env::var("TERMISSH_USER").unwrap_or_else(|_| fatal("TERMISSH_USER not set"));
     let pass = env::var("TERMISSH_PASS").unwrap_or_default();
 
-    let tcp = match TcpStream::connect(format!("{}:{}", host, port)) {
+    let addr = match format!("{}:{}", host, port).to_socket_addrs() {
+        Ok(mut iter) => match iter.next() {
+            Some(a) => a,
+            None => fatal(&format!("Could not resolve {}:{}", host, port)),
+        },
+        Err(e) => fatal(&format!("DNS resolve failed for {}: {}", host, e)),
+    };
+    let tcp = match TcpStream::connect_timeout(&addr, Duration::from_secs(6)) {
         Ok(tcp) => tcp,
         Err(e) => fatal(&format!("Connection failed: {}", e)),
     };
+    let _ = tcp.set_read_timeout(Some(Duration::from_secs(8)));
+    let _ = tcp.set_write_timeout(Some(Duration::from_secs(8)));
 
     let mut sess = ssh2::Session::new().expect("Failed to create SSH session");
     sess.set_tcp_stream(tcp);
+    sess.set_timeout(8000);
     if let Err(e) = sess.handshake() {
         fatal(&format!("SSH handshake failed: {}", e));
     }

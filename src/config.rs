@@ -207,6 +207,7 @@ pub struct CustomCommand {
 fn default_font_size() -> f32 { 13.0 }
 fn default_true() -> bool { true }
 fn default_suggestions() -> bool { true }
+fn default_reconnect_interval() -> u32 { 5 }
 
 #[derive(Serialize, Deserialize, Clone, Debug)]
 pub struct AppConfig {
@@ -229,6 +230,13 @@ pub struct AppConfig {
     pub show_borders: bool,
     #[serde(default = "default_suggestions")]
     pub suggestions_enabled: bool,
+    // Reconnect & storage behaviour
+    #[serde(default = "default_true")]
+    pub auto_reconnect: bool,
+    #[serde(default = "default_reconnect_interval")]
+    pub reconnect_interval_secs: u32,
+    #[serde(default = "default_true")]
+    pub local_storage_only: bool,
 }
 
 impl Default for AppConfig {
@@ -244,6 +252,9 @@ impl Default for AppConfig {
             terminal_font_size: default_font_size(),
             show_borders: default_true(),
             suggestions_enabled: default_suggestions(),
+            auto_reconnect: default_true(),
+            reconnect_interval_secs: default_reconnect_interval(),
+            local_storage_only: default_true(),
         }
     }
 }

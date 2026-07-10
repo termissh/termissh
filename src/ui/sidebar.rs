@@ -4,6 +4,7 @@ use iced::{Alignment, Element, Length};
 use crate::app::{LocalSystemInfo, Message};
 use crate::config::{AppTheme, Host};
 use crate::i18n::Texts;
+use crate::icons::{self, IconName};
 use crate::theme;
 use std::collections::HashMap;
 
@@ -17,28 +18,47 @@ pub fn view(
     _structure: &[String],
     theme: AppTheme,
     lc: theme::LayoutConfig,
+    borders_on: bool,
+    local_only: bool,
 ) -> Element<'static, Message> {
     let p = theme::palette(theme);
     let cr = lc.corner_radius;
+    let bw = if borders_on { 1.0 } else { 0.0 };
 
-    let search = text_input(texts.search_placeholder, search_query)
-        .on_input(Message::SearchInput)
-        .padding([6, 8])
-        .size(11)
-        .style(move |_t: &iced::Theme, status: text_input::Status| text_input::Style {
-            background: iced::Background::Color(p.bg_primary),
-            border: iced::Border {
-                color: match status {
-                    text_input::Status::Focused => p.border_focused,
-                    _ => p.border,
+    let search_icon = icons::icon(IconName::Search, 12.0, p.text_muted);
+    let search = row![
+        search_icon,
+        text_input(texts.search_placeholder, search_query)
+            .on_input(Message::SearchInput)
+            .padding([6, 8])
+            .size(11)
+            .style(move |_t: &iced::Theme, status: text_input::Status| text_input::Style {
+                background: iced::Background::Color(iced::Color::TRANSPARENT),
+                border: iced::Border {
+                    color: iced::Color::TRANSPARENT,
+                    width: 0.0,
+                    radius: cr.into(),
                 },
-                width: 1.0,
+                icon: p.text_muted,
+                placeholder: p.text_muted,
+                value: p.text_primary,
+                selection: p.accent,
+            }),
+    ]
+    .spacing(6)
+    .align_y(Alignment::Center)
+    .padding([0, 6]);
+
+    let search_box = container(search)
+        .width(Length::Fill)
+        .style(move |_t: &iced::Theme| container::Style {
+            background: Some(iced::Background::Color(p.bg_primary)),
+            border: iced::Border {
+                color: p.border,
+                width: bw,
                 radius: cr.into(),
             },
-            icon: p.text_muted,
-            placeholder: p.text_muted,
-            value: p.text_primary,
-            selection: p.accent,
+            ..Default::default()
         });
 
     let query_lower = search_query.to_lowercase();
@@ -59,6 +79,11 @@ pub fn view(
     for (idx, host) in &filtered_hosts {
         let is_selected = selected_host == Some(*idx);
         let is_synced = host.id.is_some();
+        let dot_icon = if is_synced {
+            IconName::CircleDot
+        } else {
+            IconName::Circle
+        };
         let dot_color = if is_synced { p.success } else { p.text_muted };
 
         let ping_text = match ping_results.get(idx) {
@@ -73,16 +98,21 @@ pub fn view(
         let host_info = format!("{}@{}", host.username, host.hostname);
         let i = *idx;
 
+        let local_badge: Option<Element<'static, Message>> = if local_only && host.id.is_none() {
+            Some(icons::icon(IconName::Power, 9.0, p.text_muted).into())
+        } else {
+            None
+        };
+
         let host_btn = button(
             row![
-                text(if is_synced { "●" } else { "○" })
-                    .size(7)
-                    .color(dot_color),
+                icons::icon(dot_icon, 8.0, dot_color),
                 column![
                     text(alias).size(11).color(p.text_primary),
                     text(host_info).size(9).color(p.text_muted),
                 ]
                 .spacing(1),
+                local_badge.unwrap_or_else(|| iced::widget::horizontal_space().into()),
                 iced::widget::horizontal_space(),
                 ping_text,
             ]
@@ -117,8 +147,8 @@ pub fn view(
 
     let context_buttons: Element<'static, Message> = if let Some(sel) = selected_host {
         row![
-            action_button("Edit", Message::OpenEditDialog(sel), false, theme, cr),
-            action_button("Del", Message::OpenDeleteConfirm(sel), true, theme, cr),
+            action_icon_button(IconName::Pencil, Message::OpenEditDialog(sel), false, theme, cr),
+            action_icon_button(IconName::Trash, Message::OpenDeleteConfirm(sel), true, theme, cr),
         ]
         .spacing(4)
         .into()
@@ -126,7 +156,6 @@ pub fn view(
         row![].into()
     };
 
-    // Compact system monitor
     let cpu_pct = system_info.cpu_usage;
     let ram_pct = system_info.memory_usage;
     let dsk_pct = system_info.disk_usage_percent;
@@ -156,8 +185,31 @@ pub fn view(
     ]
     .spacing(4);
 
+    let local_strip: Element<'static, Message> = if local_only {
+        container(
+            row![
+                icons::icon(IconName::Power, 10.0, p.success),
+                text("local storage only").size(9).color(p.text_muted),
+            ]
+            .spacing(4)
+            .align_y(Alignment::Center),
+        )
+        .padding([2, 6])
+        .width(Length::Fill)
+        .style(move |_t: &iced::Theme| container::Style {
+            background: Some(iced::Background::Color(p.bg_tertiary)),
+            border: iced::Border::default(),
+            ..Default::default()
+        })
+        .into()
+    } else {
+        Column::<Message>::new().into()
+    };
+
     let sidebar_content = column![
-        search,
+        action_row(theme, cr, texts),
+        local_strip,
+        search_box,
         scrollable(host_list)
             .height(Length::Fill)
             .style(hidden_scrollbar_style),
@@ -176,7 +228,7 @@ pub fn view(
             background: Some(iced::Background::Color(p.bg_secondary)),
             border: iced::Border {
                 color: p.border,
-                width: 1.0,
+                width: bw,
                 radius: cr.into(),
             },
             ..Default::default()
@@ -184,39 +236,47 @@ pub fn view(
         .into()
 }
 
-fn action_button(
-    label: &'static str,
+fn action_icon_button(
+    icon: IconName,
     msg: Message,
     danger: bool,
     theme: AppTheme,
     cr: f32,
 ) -> Element<'static, Message> {
     let p = theme::palette(theme);
-    let text_color = if danger { p.danger } else { p.text_secondary };
+    let icon_color = if danger { p.danger } else { p.text_muted };
 
-    button(text(label).size(10).color(text_color))
-        .on_press(msg)
-        .padding([3, 8])
-        .style(move |_t: &iced::Theme, status: button::Status| {
-            let hovered = matches!(status, button::Status::Hovered);
-            button::Style {
-                background: Some(iced::Background::Color(if hovered && danger {
-                    p.danger
-                } else if hovered {
-                    p.bg_hover
-                } else {
-                    p.bg_tertiary
-                })),
-                text_color: if hovered && danger { p.bg_primary } else { text_color },
-                border: iced::Border {
-                    color: p.border,
-                    width: 1.0,
-                    radius: cr.into(),
-                },
-                ..Default::default()
-            }
-        })
-        .into()
+    button(
+        container(icons::icon(icon, 12.0, icon_color))
+            .center_x(Length::Fill)
+            .center_y(Length::Fill)
+            .width(Length::Fill)
+            .height(Length::Fill),
+    )
+    .on_press(msg)
+    .padding(0)
+    .width(Length::Fill)
+    .height(Length::Fixed(22.0))
+    .style(move |_t: &iced::Theme, status: button::Status| {
+        let hovered = matches!(status, button::Status::Hovered);
+        button::Style {
+            background: Some(iced::Background::Color(if hovered && danger {
+                p.danger
+            } else if hovered {
+                p.bg_hover
+            } else {
+                p.bg_tertiary
+            })),
+            text_color: if hovered && danger { p.bg_primary } else { icon_color },
+            border: iced::Border {
+                color: p.border,
+                width: 1.0,
+                radius: cr.into(),
+            },
+            ..Default::default()
+        }
+    })
+    .into()
 }
 
 fn hidden_scrollbar_style(theme: &iced::Theme, status: scrollable::Status) -> scrollable::Style {
@@ -241,4 +301,62 @@ fn hidden_scrollbar_style(theme: &iced::Theme, status: scrollable::Status) -> sc
     style.horizontal_rail = invisible_rail;
     style.gap = None;
     style
+}
+
+fn action_row(theme: AppTheme, cr: f32, _texts: &Texts) -> Element<'static, Message> {
+    let items: Vec<(IconName, Message)> = vec![
+        (IconName::Plus,           Message::OpenNewDialog),
+        (IconName::Wifi,           Message::PingAll),
+        (IconName::SquareTerminal, Message::OpenCustomCommands),
+        (IconName::Folder,         Message::FtpToggle),
+        (IconName::Settings,       Message::OpenSettings),
+    ];
+
+    let mut r = row![].spacing(2).align_y(Alignment::Center);
+    for (icon_name, msg) in items {
+        r = r.push(action_chip(icon_name, msg, theme, cr));
+    }
+
+    container(r)
+        .width(Length::Fill)
+        .padding([2, 0])
+        .into()
+}
+
+fn action_chip(
+    icon: IconName,
+    msg: Message,
+    theme: AppTheme,
+    cr: f32,
+) -> Element<'static, Message> {
+    let p = theme::palette(theme);
+    button(
+        container(icons::icon(icon, 14.0, p.text_muted))
+            .center_x(Length::Fill)
+            .center_y(Length::Fill)
+            .width(Length::Fill)
+            .height(Length::Fill),
+    )
+    .on_press(msg)
+    .padding(0)
+    .width(Length::Fill)
+    .height(Length::Fixed(30.0))
+    .style(move |_t: &iced::Theme, status: button::Status| {
+        let hovered = matches!(status, button::Status::Hovered);
+        button::Style {
+            background: Some(iced::Background::Color(if hovered {
+                p.bg_hover
+            } else {
+                p.bg_tertiary
+            })),
+            text_color: if hovered { p.text_primary } else { p.text_secondary },
+            border: iced::Border {
+                color: p.border,
+                width: 0.0,
+                radius: cr.into(),
+            },
+            ..Default::default()
+        }
+    })
+    .into()
 }

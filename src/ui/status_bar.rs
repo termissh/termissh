@@ -12,6 +12,7 @@ pub fn view(
     language: Language,
     theme: AppTheme,
     lc: theme::LayoutConfig,
+    borders_on: bool,
 ) -> Element<'static, Message> {
     let p = theme::palette(theme);
     let cr = lc.corner_radius;
@@ -50,11 +51,7 @@ pub fn view(
         .padding([3, 10])
         .style(move |_t: &iced::Theme| container::Style {
             background: Some(iced::Background::Color(p.bg_secondary)),
-            border: iced::Border {
-                color: p.border,
-                width: 1.0,
-                radius: cr.into(),
-            },
+            border: theme::border(p.border, 1.0, cr, borders_on),
             ..Default::default()
         })
         .into()

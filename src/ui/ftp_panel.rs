@@ -1,12 +1,13 @@
-use iced::widget::{button, column, container, row, scrollable, text, text_input, Column};
+use iced::widget::{button, column, container, row, scrollable, text, text_input, Column, Row};
 use iced::{Alignment, Element, Length};
 
 use crate::app::{FtpLayout, FtpState, FtpStatus, Message};
 use crate::config::AppTheme;
 use crate::ftp;
+use crate::icons::{self, IconName};
 use crate::theme;
 
-pub fn view(state: &FtpState, theme: AppTheme, lc: theme::LayoutConfig) -> Element<'static, Message> {
+pub fn view(state: &FtpState, theme: AppTheme, lc: theme::LayoutConfig, borders_on: bool) -> Element<'static, Message> {
     let p = theme::palette(theme);
     let cr = lc.corner_radius;
     let is_right = state.layout == FtpLayout::Right;
@@ -14,27 +15,27 @@ pub fn view(state: &FtpState, theme: AppTheme, lc: theme::LayoutConfig) -> Eleme
 
     // ── Search bar ────────────────────────────────────────────────────
     let search_val = state.search_query.clone();
-    let clear_or_search: Element<'static, Message> = if in_search {
-        nav_btn("Clr", Message::FtpClearSearch, true, p, cr)
+    let search_btn: Element<'static, Message> = if in_search {
+        icon_nav_btn(IconName::Close, Message::FtpClearSearch, true, p, cr, 10.0)
     } else {
-        nav_btn("Srch", Message::FtpSearchSubmit, !search_val.trim().is_empty(), p, cr)
+        icon_nav_btn(IconName::Search, Message::FtpSearchSubmit, !search_val.trim().is_empty(), p, cr, 10.0)
     };
 
     let search_bar = row![
+        container(icons::icon(IconName::Search, 10.0, p.text_muted))
+            .padding([0, 1])
+            .center_y(Length::Fill),
         text_input("Search files...", &search_val)
             .on_input(Message::FtpSearchQueryChanged)
             .on_submit(Message::FtpSearchSubmit)
-            .padding([3, 6])
-            .size(11)
+            .padding([1, 4])
+            .size(10)
             .width(Length::Fill)
             .style(move |_t: &iced::Theme, status: text_input::Status| text_input::Style {
-                background: iced::Background::Color(p.bg_primary),
+                background: iced::Background::Color(iced::Color::TRANSPARENT),
                 border: iced::Border {
-                    color: match status {
-                        text_input::Status::Focused => p.border_focused,
-                        _ => p.border,
-                    },
-                    width: 1.0,
+                    color: iced::Color::TRANSPARENT,
+                    width: 0.0,
                     radius: cr.into(),
                 },
                 icon: p.text_muted,
@@ -42,10 +43,11 @@ pub fn view(state: &FtpState, theme: AppTheme, lc: theme::LayoutConfig) -> Eleme
                 value: p.text_primary,
                 selection: p.accent,
             }),
-        clear_or_search,
+        search_btn,
     ]
-    .spacing(4)
-    .align_y(Alignment::Center);
+    .spacing(1)
+    .align_y(Alignment::Center)
+    .height(Length::Fixed(22.0));
 
     // ── Path navigation header ────────────────────────────────────────
     let path_display = state.current_path.clone();
@@ -54,36 +56,51 @@ pub fn view(state: &FtpState, theme: AppTheme, lc: theme::LayoutConfig) -> Eleme
     let can_root = path_display != "/" && !in_search;
 
     let header = row![
-        text("SFTP").size(10).color(p.accent),
-        text("  ").size(10),
-        text(path_display.clone()).size(10).color(p.text_secondary),
-        iced::widget::horizontal_space(),
-        nav_btn("Up", Message::FtpNavigate(parent), can_go_up, p, cr),
-        nav_btn("/root", Message::FtpNavigate("/".to_string()), can_root, p, cr),
-        nav_btn("Refresh", Message::FtpRefresh, !in_search, p, cr),
-        nav_btn("Upload", Message::FtpPickUploadFile, !in_search, p, cr),
+        row![
+            icons::icon(IconName::Folder, 11.0, p.accent),
+            text("SFTP").size(10).color(p.accent),
+        ]
+        .spacing(5)
+        .align_y(Alignment::Center),
+        text(path_display.clone())
+            .size(10)
+            .color(p.text_secondary)
+            .width(Length::Fill)
+            .wrapping(iced::widget::text::Wrapping::None),
+        icon_nav_btn(IconName::ChevronUp, Message::FtpNavigate(parent), can_go_up, p, cr, 11.0),
+        icon_nav_btn(IconName::Folder, Message::FtpNavigate("/".to_string()), can_root, p, cr, 11.0),
+        icon_nav_btn(IconName::History, Message::FtpRefresh, !in_search, p, cr, 11.0),
+        icon_nav_btn(IconName::ArrowUp, Message::FtpPickUploadFile, !in_search, p, cr, 11.0),
     ]
-    .spacing(4)
+    .spacing(3)
     .align_y(Alignment::Center);
 
     // ── Notification bar ──────────────────────────────────────────────
     let notification: Element<'static, Message> = match &state.notification {
         Some((msg, is_err)) => {
             let color = if *is_err { p.danger } else { p.success };
-            container(text(msg.clone()).size(10).color(color))
-                .padding([2, 8])
-                .width(Length::Fill)
-                .into()
+            let notif_icon = if *is_err { IconName::TriangleAlert } else { IconName::Check };
+            container(
+                row![
+                    icons::icon(notif_icon, 10.0, color),
+                    text(msg.clone()).size(10).color(color),
+                ]
+                .spacing(5)
+                .align_y(Alignment::Center)
+            )
+            .padding([3, 8])
+            .width(Length::Fill)
+            .into()
         }
-        None => iced::widget::Space::new(0.0, 0.0).into(),
+        None => Column::<Message>::new().into(),
     };
 
     // ── File / search result list ─────────────────────────────────────
     let file_list: Column<'static, Message> = if state.searching {
-        column![text("  Searching...").size(11).color(p.text_muted)]
+        column![status_row(IconName::Search, "Searching...".to_string(), p.text_muted)]
     } else if let Some(ref results) = state.search_results {
         if results.is_empty() {
-            column![text("  No results found").size(10).color(p.text_muted)]
+            column![status_row(IconName::Info, "No results found".to_string(), p.text_muted)]
         } else {
             let mut col = Column::new().spacing(0);
             for entry in results {
@@ -92,11 +109,19 @@ pub fn view(state: &FtpState, theme: AppTheme, lc: theme::LayoutConfig) -> Eleme
             col
         }
     } else if state.loading {
-        column![text("  Loading...").size(11).color(p.text_muted)]
+        column![status_row(IconName::History, "Loading...".to_string(), p.text_muted)]
     } else if let FtpStatus::Error(ref err) = state.status {
-        column![text(format!("  ⚠ {}", err)).size(10).color(p.danger)]
+        column![
+            row![
+                icons::icon(IconName::TriangleAlert, 11.0, p.danger),
+                text(err.clone()).size(10).color(p.danger),
+            ]
+            .spacing(5)
+            .align_y(Alignment::Center)
+            .padding([6, 12]),
+        ]
     } else if state.entries.is_empty() {
-        column![text("  (empty directory)").size(10).color(p.text_muted)]
+        column![status_row(IconName::FolderOpen, "Empty directory".to_string(), p.text_muted)]
     } else {
         let mut col = Column::new().spacing(0);
         for entry in &state.entries {
@@ -115,10 +140,10 @@ pub fn view(state: &FtpState, theme: AppTheme, lc: theme::LayoutConfig) -> Eleme
 
     let panel = column![
         container(
-            column![header, search_bar].spacing(6)
+            column![header, search_bar].spacing(2)
         )
         .width(Length::Fill)
-        .padding([4, 8])
+        .padding([3, 6])
         .style(move |_: &iced::Theme| container::Style {
             background: Some(iced::Background::Color(p.bg_tertiary)),
             border: iced::Border {
@@ -155,6 +180,16 @@ pub fn view(state: &FtpState, theme: AppTheme, lc: theme::LayoutConfig) -> Eleme
         .into()
 }
 
+fn status_row(icon: IconName, msg: String, color: iced::Color) -> Row<'static, Message> {
+    row![
+        icons::icon(icon, 11.0, color),
+        text(msg).size(10).color(color),
+    ]
+    .spacing(5)
+    .align_y(Alignment::Center)
+    .padding([6, 12])
+}
+
 fn entry_row(entry: &crate::ftp::FtpEntry, p: crate::theme::Palette, cr: f32) -> Element<'static, Message> {
     let name = entry.name.clone();
     let path = entry.path.clone();
@@ -172,11 +207,13 @@ fn entry_row(entry: &crate::ftp::FtpEntry, p: crate::theme::Palette, cr: f32) ->
     };
 
     let name_color = if is_dir { p.accent } else { p.text_primary };
-    let prefix = if is_dir { "▸ " } else { "  " };
+    let type_icon = if is_dir { IconName::Folder } else { IconName::Type };
+    let type_color = if is_dir { p.accent } else { p.text_muted };
 
     button(
         row![
-            text(format!("{}{}", prefix, name))
+            icons::icon(type_icon, 12.0, type_color),
+            text(name)
                 .size(11)
                 .color(name_color)
                 .width(Length::Fill),
@@ -185,7 +222,7 @@ fn entry_row(entry: &crate::ftp::FtpEntry, p: crate::theme::Palette, cr: f32) ->
                 .color(p.text_muted)
                 .width(Length::Fixed(60.0)),
         ]
-        .spacing(8)
+        .spacing(7)
         .align_y(Alignment::Center),
     )
     .on_press(msg)
@@ -222,7 +259,8 @@ fn search_result_row(
     };
 
     let name_color = if is_dir { p.accent } else { p.text_primary };
-    let prefix = if is_dir { "▸ " } else { "  " };
+    let type_icon = if is_dir { IconName::Folder } else { IconName::Type };
+    let type_color = if is_dir { p.accent } else { p.text_muted };
 
     // Show parent dir as subtitle
     let parent_dir = std::path::Path::new(&path)
@@ -231,15 +269,22 @@ fn search_result_row(
         .unwrap_or_default();
 
     button(
-        column![
-            text(format!("{}{}", prefix, name))
-                .size(11)
-                .color(name_color),
-            text(parent_dir)
-                .size(9)
-                .color(p.text_muted),
+        row![
+            icons::icon(type_icon, 12.0, type_color),
+            column![
+                text(name).size(11).color(name_color),
+                row![
+                    icons::icon(IconName::Folder, 8.0, p.text_muted),
+                    text(parent_dir).size(9).color(p.text_muted),
+                ]
+                .spacing(3)
+                .align_y(Alignment::Center),
+            ]
+            .spacing(1)
+            .width(Length::Fill),
         ]
-        .spacing(1),
+        .spacing(7)
+        .align_y(Alignment::Center),
     )
     .on_press(msg)
     .width(Length::Fill)
@@ -259,28 +304,37 @@ fn search_result_row(
     .into()
 }
 
-fn nav_btn(
-    label: &'static str,
+fn icon_nav_btn(
+    icon: IconName,
     msg: Message,
     enabled: bool,
     p: crate::theme::Palette,
     cr: f32,
+    icon_size: f32,
 ) -> Element<'static, Message> {
     let color = if enabled { p.text_secondary } else { p.text_muted };
-    let mut btn = button(text(label).size(10).color(color)).padding([2, 8]).style(
-        move |_: &iced::Theme, status: button::Status| button::Style {
-            background: Some(iced::Background::Color(match status {
-                button::Status::Hovered if enabled => p.bg_hover,
-                _ => iced::Color::TRANSPARENT,
-            })),
-            text_color: color,
-            border: iced::Border {
-                radius: cr.into(),
-                ..Default::default()
-            },
+    let mut btn = button(
+        container(icons::icon(icon, icon_size, color))
+            .center_x(Length::Fill)
+            .center_y(Length::Fill)
+            .width(Length::Fill)
+            .height(Length::Fill),
+    )
+    .padding(0)
+    .width(Length::Fixed(22.0))
+    .height(Length::Fixed(20.0))
+    .style(move |_: &iced::Theme, status: button::Status| button::Style {
+        background: Some(iced::Background::Color(match status {
+            button::Status::Hovered if enabled => p.bg_hover,
+            _ => iced::Color::TRANSPARENT,
+        })),
+        text_color: color,
+        border: iced::Border {
+            radius: cr.into(),
             ..Default::default()
         },
-    );
+        ..Default::default()
+    });
     if enabled {
         btn = btn.on_press(msg);
     }

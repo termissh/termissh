@@ -6,7 +6,7 @@ use std::io::{Read, Write};
 use std::process::{Child, ChildStdin};
 use std::sync::{mpsc, Arc, Mutex};
 use std::thread;
-use std::net::TcpStream;
+use std::net::{TcpStream, ToSocketAddrs};
 use std::time::Duration;
 use sysinfo::{Disks, System};
 use vt100::Parser;
@@ -18,7 +18,7 @@ use crate::i18n::Texts;
 use rfd;
 use crate::terminal::bridge;
 use crate::theme;
-use crate::ui::{dialogs, ftp_panel, sidebar, status_bar, tab_bar, toolbar};
+use crate::ui::{dialogs, ftp_panel, sidebar, status_bar, tab_bar, title_bar};
 
 const TERMINAL_ROWS: u16 = 40;
 const TERMINAL_COLS: u16 = 132;
@@ -27,191 +27,7 @@ fn normalize_api_url(input: &str) -> String {
     input.trim().trim_end_matches('/').to_string()
 }
 
-// --- Security audit types ---
-
-#[derive(Debug, Clone, PartialEq)]
-pub enum SecuritySeverity {
-    Critical,
-    High,
-    Medium,
-    Low,
-    Info,
-}
-
-impl SecuritySeverity {
-    pub fn label(&self) -> &'static str {
-        match self {
-            Self::Critical => "CRITICAL",
-            Self::High => "HIGH",
-            Self::Medium => "MEDIUM",
-            Self::Low => "LOW",
-            Self::Info => "INFO",
-        }
-    }
-
-    pub fn icon(&self) -> &'static str {
-        match self {
-            Self::Critical => "🔴",
-            Self::High => "🟠",
-            Self::Medium => "🟡",
-            Self::Low => "🔵",
-            Self::Info => "⚪",
-        }
-    }
-
-    pub fn sort_key(&self) -> u8 {
-        match self {
-            Self::Critical => 0,
-            Self::High => 1,
-            Self::Medium => 2,
-            Self::Low => 3,
-            Self::Info => 4,
-        }
-    }
-}
-
-#[derive(Debug, Clone)]
-pub struct SecurityFinding {
-    pub severity: SecuritySeverity,
-    pub category: String,
-    pub message: String,
-}
-
-pub fn run_security_audit(config: &AppConfig, api_url: &str) -> Vec<SecurityFinding> {
-    let mut findings: Vec<SecurityFinding> = Vec::new();
-
-    const COMMON_PASSWORDS: &[&str] = &[
-        "password", "123456", "admin", "root", "qwerty",
-        "letmein", "welcome", "monkey", "abc123", "1234",
-        "pass", "test", "guest", "login", "master",
-    ];
-
-    for host in &config.hosts {
-        // Root login
-        if host.username == "root" {
-            findings.push(SecurityFinding {
-                severity: SecuritySeverity::High,
-                category: "Authentication".into(),
-                message: format!(
-                    "[{}] Root login detected — use a non-root user with sudo instead",
-                    host.alias
-                ),
-            });
-        }
-
-        // Password stored in config
-        if let Some(ref pwd) = host.password {
-            findings.push(SecurityFinding {
-                severity: SecuritySeverity::Medium,
-                category: "Credentials".into(),
-                message: format!(
-                    "[{}] Password saved in config — consider SSH key auth instead",
-                    host.alias
-                ),
-            });
-
-            // Short password
-            if pwd.len() < 8 {
-                findings.push(SecurityFinding {
-                    severity: SecuritySeverity::Critical,
-                    category: "Weak Password".into(),
-                    message: format!(
-                        "[{}] Password is too short ({} chars) — use at least 12 chars",
-                        host.alias,
-                        pwd.len()
-                    ),
-                });
-            }
-
-            // Common / trivial password
-            let pwd_lower = pwd.to_lowercase();
-            if COMMON_PASSWORDS.iter().any(|&c| pwd_lower == c) {
-                findings.push(SecurityFinding {
-                    severity: SecuritySeverity::Critical,
-                    category: "Weak Password".into(),
-                    message: format!(
-                        "[{}] Trivial password detected — change it immediately!",
-                        host.alias
-                    ),
-                });
-            }
-        }
-
-        // Default SSH port (info — not bad, but worth noting)
-        if host.port != 22 {
-            findings.push(SecurityFinding {
-                severity: SecuritySeverity::Info,
-                category: "Port".into(),
-                message: format!(
-                    "[{}] Non-standard SSH port {} — obscures but does not replace security",
-                    host.alias, host.port
-                ),
-            });
-        }
-    }
-
-    // HTTP API endpoint
-    if api_url.starts_with("http://") && !api_url.is_empty() {
-        findings.push(SecurityFinding {
-            severity: SecuritySeverity::High,
-            category: "API Security".into(),
-            message: "API URL uses plain HTTP — switch to HTTPS to protect your API key".into(),
-        });
-    }
-
-    // API key format
-    if let Some(ref key) = config.api_key {
-        if !key.starts_with("termi_") || key.len() < 20 {
-            findings.push(SecurityFinding {
-                severity: SecuritySeverity::Medium,
-                category: "API Key".into(),
-                message: "API key format looks unusual — expected format: termi_<uuid>".into(),
-            });
-        }
-    }
-
-    // Custom commands with potentially dangerous scripts
-    for cmd in &config.custom_commands {
-        if cmd.script.contains("rm -rf") || cmd.script.contains("mkfs") || cmd.script.contains(":(){:|:&}") {
-            findings.push(SecurityFinding {
-                severity: SecuritySeverity::High,
-                category: "Custom Command".into(),
-                message: format!(
-                    "[{}] Custom command '{}' contains potentially destructive operations",
-                    cmd.trigger, cmd.description
-                ),
-            });
-        }
-        if cmd.script.contains("sudo") {
-            findings.push(SecurityFinding {
-                severity: SecuritySeverity::Low,
-                category: "Custom Command".into(),
-                message: format!(
-                    "[{}] Custom command '{}' uses sudo — ensure you trust this script",
-                    cmd.trigger, cmd.description
-                ),
-            });
-        }
-    }
-
-    // Config encryption confirmation (always show as positive)
-    findings.push(SecurityFinding {
-        severity: SecuritySeverity::Info,
-        category: "Storage".into(),
-        message: "Config is AES-256-GCM encrypted on disk — credentials are protected at rest".into(),
-    });
-
-    if findings.iter().filter(|f| f.severity != SecuritySeverity::Info).count() == 0 {
-        findings.push(SecurityFinding {
-            severity: SecuritySeverity::Info,
-            category: "Overall".into(),
-            message: "No critical security issues found — good job!".into(),
-        });
-    }
-
-    findings.sort_by_key(|f| f.severity.sort_key());
-    findings
-}
+// --- Security audit removed (user request) ---
 
 // --- Data structures ---
 
@@ -238,6 +54,41 @@ pub struct TerminalTab {
     // System management panel
     pub sys_open: bool,
     pub sys_state: crate::syspanel::SysState,
+    // Reconnect state
+    /// Set when the user explicitly closes the tab or hits Ctrl+D — disables auto-reconnect.
+    pub manual_disconnect: bool,
+    /// When set, the relay will be re-spawned at this Instant in the same tab.
+    pub reconnect_due_at: Option<std::time::Instant>,
+    /// How many reconnect attempts have been made for this tab.
+    pub reconnect_attempts: u32,
+}
+
+impl TerminalTab {
+    fn new_for_host(id: u64, host: Host) -> Self {
+        Self {
+            id,
+            label: host.alias.clone(),
+            host: host.clone(),
+            connected: false,
+            ssh_process: None,
+            relay_error: None,
+            output: String::new(),
+            structure: Vec::new(),
+            ftp: FtpState::default(),
+            font_size: 13.0,
+            search_active: false,
+            search_query: String::new(),
+            quick_cmds_visible: false,
+            input_buffer: String::new(),
+            command_history: Vec::new(),
+            suggestion_index: None,
+            sys_open: false,
+            sys_state: crate::syspanel::SysState::new(),
+            manual_disconnect: false,
+            reconnect_due_at: None,
+            reconnect_attempts: 0,
+        }
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -403,6 +254,10 @@ pub enum Message {
     SettingsFontSizeChanged(f32),
     SettingsShowBordersChanged(bool),
     SettingsSuggestionsChanged(bool),
+    // Settings — connection & storage
+    SettingsAutoReconnectChanged(bool),
+    SettingsReconnectIntervalChanged(u32),
+    SettingsLocalStorageChanged(bool),
 
     // Command suggestions
     TerminalSuggestionAccept(String),
@@ -413,14 +268,20 @@ pub enum Message {
     TerminalScrollModeToggle,
     TerminalScrollBy(f32), // delta: negative = up, positive = down
 
-    // Security audit
-    OpenSecurityAudit,
-
     // Custom commands (aliases)
     OpenCustomCommands,
     AddCustomCommand,
     DeleteCustomCommand(usize),
     SaveCustomCommands,
+
+    // Window control (custom title bar in frameless mode)
+
+    // Window control (custom title bar in frameless mode)
+    WindowIdAcquired(Option<iced::window::Id>),
+    WindowClose,
+    WindowMinimize,
+    WindowToggleMaximize,
+    WindowDrag,
 
     // Reserved for future richer terminal integration
     TerminalEvent(u64, String),
@@ -469,6 +330,9 @@ pub struct App {
 
     // Theme
     pub theme: AppTheme,
+
+    // Window control (custom title bar; resolved at runtime)
+    pub window_id: Option<iced::window::Id>,
 }
 
 impl App {
@@ -516,8 +380,9 @@ impl App {
                 disks,
                 ping_results: HashMap::new(),
                 theme,
+                window_id: None,
             },
-            Task::none(),
+            iced::window::get_oldest().map(Message::WindowIdAcquired),
         )
     }
 
@@ -525,8 +390,113 @@ impl App {
         "Termissh".to_string()
     }
 
+    /// Spawn the internal relay process for an existing tab and attach it.
+    /// Reused by both initial connect and auto-reconnect.
+    fn start_relay_for_tab(&mut self, tab_id: u64, host: &crate::config::Host) -> Task<Message> {
+        // Make sure no stale runtime is around for this id
+        if let Some(mut stale) = self.terminal_runtime.remove(&tab_id) {
+            let _ = stale.child.kill();
+            let _ = stale.child.wait();
+        }
+
+        let relay_path = match bridge::find_relay_binary() {
+            Ok(p) => p,
+            Err(err) => {
+                if let Some(tab) = self.terminal_tabs.iter_mut().find(|t| t.id == tab_id) {
+                    tab.connected = false;
+                    tab.relay_error = Some(err.to_string());
+                    tab.output.push_str(&format!("[relay error: {}]\r\n", err));
+                }
+                return Task::none();
+            }
+        };
+
+        match bridge::spawn_relay_child(&relay_path, host) {
+            Ok(mut child) => {
+                let stdin = child.stdin.take();
+                let stdout = child.stdout.take();
+                let stderr = child.stderr.take();
+                match (stdin, stdout, stderr) {
+                    (Some(stdin), Some(stdout), Some(stderr)) => {
+                        let (tx, rx) = mpsc::channel::<Vec<u8>>();
+                        spawn_reader_thread(stdout, tx.clone());
+                        spawn_reader_thread(stderr, tx);
+                        self.terminal_runtime.insert(
+                            tab_id,
+                            TerminalRuntime {
+                                child,
+                                stdin: Arc::new(Mutex::new(stdin)),
+                                rx,
+                                parser: Parser::new(TERMINAL_ROWS, TERMINAL_COLS, 10_000),
+                            },
+                        );
+                        if let Some(tab) = self.terminal_tabs.iter_mut().find(|t| t.id == tab_id) {
+                            tab.connected = true;
+                            tab.ssh_process = Some(SshProcessInfo { relay_path: relay_path.clone() });
+                            tab.relay_error = None;
+                            tab.reconnect_due_at = None;
+                            tab.reconnect_attempts = 0;
+                            tab.manual_disconnect = false;
+                            if tab.output.is_empty() {
+                                tab.output = format!(
+                                    "Connected to {}@{}:{}\r\n",
+                                    host.username, host.hostname, host.port
+                                );
+                            } else {
+                                tab.output.push_str(&format!(
+                                    "\r\n[reconnect #{0}] Connected to {1}@{2}:{3}\r\n",
+                                    tab.reconnect_attempts, host.username, host.hostname, host.port
+                                ));
+                            }
+                            // Refresh remote structure for the side panel
+                            tab.structure = fetch_remote_structure(host);
+                        }
+                    }
+                    _ => {
+                        if let Some(tab) = self.terminal_tabs.iter_mut().find(|t| t.id == tab_id) {
+                            tab.connected = false;
+                            tab.relay_error = Some("Relay started but stdio pipes are unavailable.".to_string());
+                            tab.output.push_str("[relay error: stdio pipes unavailable]\r\n");
+                        }
+                    }
+                }
+            }
+            Err(err) => {
+                if let Some(tab) = self.terminal_tabs.iter_mut().find(|t| t.id == tab_id) {
+                    tab.connected = false;
+                    tab.relay_error = Some(err.to_string());
+                    tab.output.push_str(&format!("[relay error: {}]\r\n", err));
+                }
+            }
+        }
+        Task::none()
+    }
+
     pub fn update(&mut self, message: Message) -> Task<Message> {
         match message {
+            Message::WindowIdAcquired(id) => {
+                self.window_id = id;
+            }
+            Message::WindowClose => {
+                if let Some(id) = self.window_id {
+                    return iced::window::close(id);
+                }
+            }
+            Message::WindowMinimize => {
+                if let Some(id) = self.window_id {
+                    return iced::window::minimize(id, true);
+                }
+            }
+            Message::WindowToggleMaximize => {
+                if let Some(id) = self.window_id {
+                    return iced::window::toggle_maximize(id);
+                }
+            }
+            Message::WindowDrag => {
+                if let Some(id) = self.window_id {
+                    return iced::window::drag(id);
+                }
+            }
             Message::SelectHost(idx) => {
                 self.selected_host = Some(idx);
             }
@@ -535,145 +505,17 @@ impl App {
                     let host = self.config.hosts[idx].clone();
                     self.selected_host = Some(idx);
 
-                    // Resolve relay launcher path (single-binary internal relay mode)
-                    match bridge::find_relay_binary() {
-                        Ok(relay_path) => {
-                            self.tab_counter += 1;
-                            let tab_id = self.tab_counter;
+                    // Allocate a new tab id and create an empty tab
+                    self.tab_counter += 1;
+                    let tab_id = self.tab_counter;
+                    let mut tab = TerminalTab::new_for_host(tab_id, host.clone());
+                    tab.connected = false;
+                    tab.output = format!("Connecting to {}@{}:{} ...\r\n", host.username, host.hostname, host.port);
+                    self.terminal_tabs.push(tab);
+                    self.active_tab = Some(self.terminal_tabs.len() - 1);
 
-                            let tab = match bridge::spawn_relay_child(&relay_path, &host) {
-                                Ok(mut child) => {
-                                    let stdin = child.stdin.take();
-                                    let stdout = child.stdout.take();
-                                    let stderr = child.stderr.take();
-
-                                    match (stdin, stdout, stderr) {
-                                        (Some(stdin), Some(stdout), Some(stderr)) => {
-                                            let (tx, rx) = mpsc::channel::<Vec<u8>>();
-                                            spawn_reader_thread(stdout, tx.clone());
-                                            spawn_reader_thread(stderr, tx);
-
-                                            self.terminal_runtime.insert(
-                                                tab_id,
-                                                TerminalRuntime {
-                                                    child,
-                                                    stdin: Arc::new(Mutex::new(stdin)),
-                                                    rx,
-                                                    parser: Parser::new(
-                                                        TERMINAL_ROWS,
-                                                        TERMINAL_COLS,
-                                                        10_000,
-                                                    ),
-                                                },
-                                            );
-
-                                            TerminalTab {
-                                                id: tab_id,
-                                                label: host.alias.clone(),
-                                                host: host.clone(),
-                                                connected: true,
-                                                ssh_process: Some(SshProcessInfo {
-                                                    relay_path: relay_path.clone(),
-                                                }),
-                                                relay_error: None,
-                                                output: format!(
-                                                    "Connected to {}@{}:{}\n",
-                                                    host.username, host.hostname, host.port
-                                                ),
-                                                structure: fetch_remote_structure(&host),
-                                                ftp: FtpState::default(),
-                                                font_size: 13.0,
-                                                search_active: false,
-                                                search_query: String::new(),
-                                                quick_cmds_visible: false,
-                                                input_buffer: String::new(),
-                                                command_history: Vec::new(),
-                                                suggestion_index: None,
-                                                sys_open: false,
-                                                sys_state: crate::syspanel::SysState::new(),
-                                            }
-                                        }
-                                        _ => TerminalTab {
-                                            id: tab_id,
-                                            label: host.alias.clone(),
-                                            host: host.clone(),
-                                            connected: false,
-                                            ssh_process: Some(SshProcessInfo {
-                                                relay_path: relay_path.clone(),
-                                            }),
-                                            relay_error: Some(
-                                                "Relay started but stdio pipes are unavailable."
-                                                    .to_string(),
-                                            ),
-                                            output: String::new(),
-                                            structure: Vec::new(),
-                                            ftp: FtpState::default(),
-                                            font_size: 13.0,
-                                            search_active: false,
-                                            search_query: String::new(),
-                                            quick_cmds_visible: false,
-                                            input_buffer: String::new(),
-                                            command_history: Vec::new(),
-                                            suggestion_index: None,
-                                            sys_open: false,
-                                            sys_state: crate::syspanel::SysState::new(),
-                                        },
-                                    }
-                                }
-                                Err(err) => TerminalTab {
-                                    id: tab_id,
-                                    label: host.alias.clone(),
-                                    host: host.clone(),
-                                    connected: false,
-                                    ssh_process: Some(SshProcessInfo {
-                                        relay_path: relay_path.clone(),
-                                    }),
-                                    relay_error: Some(err.to_string()),
-                                    output: String::new(),
-                                    structure: Vec::new(),
-                                    ftp: FtpState::default(),
-                                    font_size: 13.0,
-                                    search_active: false,
-                                    search_query: String::new(),
-                                    quick_cmds_visible: false,
-                                    input_buffer: String::new(),
-                                    command_history: Vec::new(),
-                                    suggestion_index: None,
-                                    sys_open: false,
-                                    sys_state: crate::syspanel::SysState::new(),
-                                },
-                            };
-
-                            self.terminal_tabs.push(tab);
-                            self.active_tab = Some(self.terminal_tabs.len() - 1);
-                        }
-                        Err(err) => {
-                            // Relay not found - show connection info instead
-                            self.tab_counter += 1;
-                            let tab = TerminalTab {
-                                id: self.tab_counter,
-                                label: host.alias.clone(),
-                                host: host.clone(),
-                                connected: false,
-                                ssh_process: None,
-                                relay_error: Some(err.to_string()),
-                                output: String::new(),
-                                structure: Vec::new(),
-                                ftp: FtpState::default(),
-                                font_size: 13.0,
-                                search_active: false,
-                                search_query: String::new(),
-                                quick_cmds_visible: false,
-                                input_buffer: String::new(),
-                                command_history: Vec::new(),
-                                suggestion_index: None,
-                                sys_open: false,
-                                sys_state: crate::syspanel::SysState::new(),
-                            };
-                            self.terminal_tabs.push(tab);
-                            self.active_tab = Some(self.terminal_tabs.len() - 1);
-                        }
-                    }
+                    // Try to spawn the relay
+                    return self.start_relay_for_tab(tab_id, &host);
                 }
             }
             Message::CloseTab(idx) => {
@@ -833,6 +675,9 @@ impl App {
                     terminal_font_size: self.config.terminal_font_size,
                     show_borders: self.config.show_borders,
                     suggestions_enabled: self.config.suggestions_enabled,
+                    auto_reconnect: self.config.auto_reconnect,
+                    reconnect_interval_secs: self.config.reconnect_interval_secs,
+                    local_storage_only: self.config.local_storage_only,
                 }));
             }
             Message::SaveSettings => {
@@ -865,13 +710,18 @@ impl App {
                     self.config.terminal_font_size = form.terminal_font_size;
                     self.config.show_borders = form.show_borders;
                     self.config.suggestions_enabled = form.suggestions_enabled;
+                    self.config.auto_reconnect = form.auto_reconnect;
+                    self.config.reconnect_interval_secs = form.reconnect_interval_secs.clamp(1, 300);
+                    self.config.local_storage_only = form.local_storage_only;
                     let _ = config::save_config(&self.config);
 
-                    // Sync from API if key is set
-                    if let Some(ref key) = self.config.api_key {
-                        if let Ok(hosts) = api::fetch_from_api(&self.api_url, key) {
-                            self.config.hosts = hosts;
-                            let _ = config::save_config(&self.config);
+                    // Sync from API if key is set AND local-storage-only is off
+                    if !self.config.local_storage_only {
+                        if let Some(ref key) = self.config.api_key {
+                            if let Ok(hosts) = api::fetch_from_api(&self.api_url, key) {
+                                self.config.hosts = hosts;
+                                let _ = config::save_config(&self.config);
+                            }
                         }
                     }
                 }
@@ -1237,6 +1087,21 @@ impl App {
                     form.suggestions_enabled = val;
                 }
             }
+            Message::SettingsAutoReconnectChanged(val) => {
+                if let Some(dialogs::DialogState::Settings(ref mut form)) = self.dialog {
+                    form.auto_reconnect = val;
+                }
+            }
+            Message::SettingsReconnectIntervalChanged(secs) => {
+                if let Some(dialogs::DialogState::Settings(ref mut form)) = self.dialog {
+                    form.reconnect_interval_secs = secs.clamp(1, 300);
+                }
+            }
+            Message::SettingsLocalStorageChanged(val) => {
+                if let Some(dialogs::DialogState::Settings(ref mut form)) = self.dialog {
+                    form.local_storage_only = val;
+                }
+            }
             Message::TerminalScrollModeToggle => {
                 self.scroll_mode = !self.scroll_mode;
                 if !self.scroll_mode {
@@ -1548,7 +1413,48 @@ impl App {
                 for id in to_remove {
                     self.terminal_runtime.remove(&id);
                     if let Some(tab) = self.terminal_tabs.iter_mut().find(|t| t.id == id) {
+                        let was_connected = tab.connected;
                         tab.connected = false;
+                        // Auto-reconnect: if enabled, schedule a retry in the same tab
+                        if was_connected
+                            && self.config.auto_reconnect
+                            && !tab.manual_disconnect
+                            && tab.ssh_process.is_some()
+                        {
+                            let secs = self.config.reconnect_interval_secs.max(1);
+                            tab.reconnect_due_at = Some(std::time::Instant::now()
+                                + std::time::Duration::from_secs(secs as u64));
+                            tab.reconnect_attempts = tab.reconnect_attempts.saturating_add(1);
+                            tab.output.push_str(&format!(
+                                "\r\n[connection lost — auto-reconnect in {0}s, attempt #{1}]\r\n",
+                                secs, tab.reconnect_attempts
+                            ));
+                        } else if was_connected {
+                            tab.output.push_str("\r\n[connection lost]\r\n");
+                        }
+                    }
+                }
+
+                // Drive any pending reconnects whose timer has elapsed
+                let now = std::time::Instant::now();
+                let mut due: Vec<u64> = Vec::new();
+                for tab in self.terminal_tabs.iter() {
+                    if let Some(due_at) = tab.reconnect_due_at {
+                        if !tab.connected
+                            && tab.ssh_process.is_some()
+                            && !tab.manual_disconnect
+                            && now >= due_at
+                        {
+                            due.push(tab.id);
+                        }
+                    }
+                }
+                let mut reconnect_task = Task::none();
+                for tab_id in &due {
+                    if let Some(tab) = self.terminal_tabs.iter_mut().find(|t| t.id == *tab_id) {
+                        tab.reconnect_due_at = None;
+                        let host = tab.host.clone();
+                        reconnect_task = reconnect_task.chain(self.start_relay_for_tab(*tab_id, &host));
                     }
                 }
 
@@ -1563,10 +1469,14 @@ impl App {
                 // Only auto-snap to bottom when NOT in scroll mode
                 if should_snap_bottom && !self.scroll_mode {
                     self.scroll_position = 1.0;
-                    return scrollable::snap_to(
+                    let snap = scrollable::snap_to(
                         self.terminal_scroll_id.clone(),
                         scrollable::RelativeOffset { x: 0.0, y: 1.0 },
                     );
+                    return snap.chain(reconnect_task);
+                }
+                if !due.is_empty() {
+                    return reconnect_task;
                 }
             }
             Message::TerminalEvent(_id, _event) => {
@@ -1618,12 +1528,6 @@ impl App {
                 let Some(i) = self.active_tab else { return Task::none(); };
                 let content = self.terminal_tabs[i].output.clone();
                 return iced::clipboard::write::<Message>(content);
-            }
-
-            // ── Security audit ────────────────────────────────────────────
-            Message::OpenSecurityAudit => {
-                let findings = run_security_audit(&self.config, &self.api_url);
-                self.dialog = Some(dialogs::DialogState::SecurityAudit(findings));
             }
 
             // ── Custom commands (aliases) ─────────────────────────────────
@@ -1773,8 +1677,8 @@ impl App {
         let p = theme::palette(self.theme);
         let lc = theme::layout(self.config.layout);
 
-        let toolbar_view = toolbar::view(&texts, self.theme, lc);
-        let tab_bar_view = tab_bar::view(&self.terminal_tabs, self.active_tab, self.theme, lc);
+        let title_bar_view = title_bar::view(self.theme, self.config.show_borders);
+        let tab_bar_view = tab_bar::view(&self.terminal_tabs, self.active_tab, self.theme, lc, self.config.show_borders);
         let structure: &[String] = self
             .active_tab
             .and_then(|i| self.terminal_tabs.get(i))
@@ -1790,6 +1694,8 @@ impl App {
             structure,
             self.theme,
             lc,
+            self.config.show_borders,
+            self.config.local_storage_only,
         );
         let status_view = status_bar::view(
             &texts,
@@ -1797,6 +1703,7 @@ impl App {
             self.config.language,
             self.theme,
             lc,
+            self.config.show_borders,
         );
 
         let main_area = self.view_main_area(&texts, lc);
@@ -1804,13 +1711,13 @@ impl App {
         let pg = lc.panel_gap;
         let cp = lc.container_padding;
         let content = column![
-            toolbar_view,
+            title_bar_view,
             tab_bar_view,
             row![sidebar_view, main_area].spacing(pg).height(Length::Fill),
             status_view,
         ]
-        .spacing(pg)
-        .padding(cp);
+        .spacing(0)
+        .padding(0);
 
         let base: Element<'_, Message> = container(content)
             .width(Length::Fill)
@@ -1822,7 +1729,7 @@ impl App {
             .into();
 
         if let Some(ref dialog_state) = self.dialog {
-            let dialog_overlay = dialogs::view_dialog(&texts, dialog_state, self.theme, lc);
+            let dialog_overlay = dialogs::view_dialog(&texts, dialog_state, self.theme, lc, self.config.show_borders);
             iced::widget::stack![base, dialog_overlay].into()
         } else {
             base
@@ -1846,8 +1753,21 @@ impl App {
                     );
                 }
 
-                let status_text = if tab.connected { "connected" } else { "disconnected" };
-                let status_color = if tab.connected { p.success } else { p.danger };
+                let status_text = if tab.connected {
+                    "connected".to_string()
+                } else if tab.reconnect_due_at.is_some() {
+                    let secs = self.config.reconnect_interval_secs.max(1);
+                    format!("reconnecting in {0}s", secs)
+                } else {
+                    "disconnected".to_string()
+                };
+                let status_color = if tab.connected {
+                    p.success
+                } else if tab.reconnect_due_at.is_some() {
+                    p.warning
+                } else {
+                    p.danger
+                };
 
                 // Build top_bar with optional layout-toggle button (top-right)
                 let mut top_bar_row = iced::widget::Row::new()
@@ -1889,24 +1809,45 @@ impl App {
                         top_bar_row.push(terminal_action_button(layout_label, Message::FtpToggleLayout, p));
                 }
                 top_bar_row = top_bar_row
-                    .push(terminal_action_button(
-                        if tab.quick_cmds_visible { "CMD ●" } else { "CMD" },
-                        Message::TerminalQuickCmdsToggle, p,
+                    .push(terminal_icon_button(
+                        crate::icons::IconName::SquareTerminal,
+                        tab.quick_cmds_visible,
+                        Message::TerminalQuickCmdsToggle, p, 13.0,
                     ))
-                    .push(terminal_action_button(
-                        if tab.search_active { "Search ●" } else { "Search" },
-                        Message::TerminalSearchToggle, p,
+                    .push(terminal_icon_button(
+                        crate::icons::IconName::Search,
+                        tab.search_active,
+                        Message::TerminalSearchToggle, p, 13.0,
                     ))
-                    .push(terminal_action_button(
-                        if scroll_mode { "SCROLL ●" } else { "SCROLL" },
-                        Message::TerminalScrollModeToggle, p,
+                    .push(terminal_icon_button(
+                        crate::icons::IconName::History,
+                        scroll_mode,
+                        Message::TerminalScrollModeToggle, p, 13.0,
                     ))
-                    .push(terminal_action_button("A-", Message::TerminalFontSizeDec, p))
-                    .push(terminal_action_button("A+", Message::TerminalFontSizeInc, p))
-                    .push(terminal_action_button("^C", Message::TerminalSendCtrlC, p))
-                    .push(terminal_action_button("Copy", Message::TerminalCopyOutput, p))
-                    .push(terminal_action_button("Clear", Message::TerminalClear, p))
-                    .push(terminal_action_button("⚙ System", Message::SysPanelOpen(tab.id), p));
+                    .push(terminal_icon_button(
+                        crate::icons::IconName::Type, false,
+                        Message::TerminalFontSizeDec, p, 11.0,
+                    ))
+                    .push(terminal_icon_button(
+                        crate::icons::IconName::Type, false,
+                        Message::TerminalFontSizeInc, p, 13.0,
+                    ))
+                    .push(terminal_icon_button(
+                        crate::icons::IconName::SquareAsterisk, false,
+                        Message::TerminalSendCtrlC, p, 13.0,
+                    ))
+                    .push(terminal_icon_button(
+                        crate::icons::IconName::Copy, false,
+                        Message::TerminalCopyOutput, p, 13.0,
+                    ))
+                    .push(terminal_icon_button(
+                        crate::icons::IconName::Trash, false,
+                        Message::TerminalClear, p, 13.0,
+                    ))
+                    .push(terminal_icon_button(
+                        crate::icons::IconName::Settings, false,
+                        Message::SysPanelOpen(tab.id), p, 13.0,
+                    ));
                 let top_bar = top_bar_row;
 
                 // Terminal spans — with optional search highlight
@@ -1978,30 +1919,39 @@ impl App {
 
                 // Quick commands bar (with recent history section)
                 if tab.quick_cmds_visible && !in_alternate_screen {
-                    // Row 1: built-in quick commands
+                    // Row 1: built-in quick commands (icon-only buttons)
                     let mut cmd_row = iced::widget::Row::new()
                         .spacing(3)
-                        .padding([2, 6])
+                        .padding([3, 6])
                         .align_y(Alignment::Center);
-                    for (label, cmd) in QUICK_CMDS {
+                    for (icon_name, _label, cmd) in QUICK_CMDS {
                         let cmd_str = (*cmd).to_string();
+                        let icon = crate::icons::icon(*icon_name, 13.0, p.text_secondary);
                         cmd_row = cmd_row.push(
-                            button(text(*label).size(10).color(p.text_secondary))
-                                .on_press(Message::TerminalQuickCmd(cmd_str))
-                                .padding([2, 7])
-                                .style(move |_: &iced::Theme, s: button::Status| button::Style {
-                                    background: Some(iced::Background::Color(match s {
-                                        button::Status::Hovered => p.bg_hover,
-                                        _ => p.bg_tertiary,
-                                    })),
-                                    text_color: p.text_secondary,
-                                    border: iced::Border {
-                                        color: p.border,
-                                        width: 1.0,
-                                        radius: cr.into(),
-                                    },
-                                    ..Default::default()
-                                }),
+                            button(
+                                container(icon)
+                                    .center_x(Length::Fill)
+                                    .center_y(Length::Fill)
+                                    .width(Length::Fill)
+                                    .height(Length::Fill),
+                            )
+                            .on_press(Message::TerminalQuickCmd(cmd_str))
+                            .padding(0)
+                            .width(Length::Fixed(24.0))
+                            .height(Length::Fixed(20.0))
+                            .style(move |_: &iced::Theme, s: button::Status| button::Style {
+                                background: Some(iced::Background::Color(match s {
+                                    button::Status::Hovered => p.bg_hover,
+                                    _ => p.bg_tertiary,
+                                })),
+                                text_color: p.text_secondary,
+                                border: iced::Border {
+                                    color: p.border,
+                                    width: 1.0,
+                                    radius: cr.into(),
+                                },
+                                ..Default::default()
+                            }),
                         );
                     }
                     let qc_bar = container(cmd_row)
@@ -2014,14 +1964,19 @@ impl App {
                         });
                     panel = panel.push(qc_bar);
 
-                    // Row 2: recent command history (last 8, newest first)
+                    // Row 2: recent command history (last 8, newest first) with icon
                     if !tab.command_history.is_empty() {
                         let mut hist_row = iced::widget::Row::new()
                             .spacing(3)
-                            .padding([2, 6])
+                            .padding([3, 6])
                             .align_y(Alignment::Center);
                         hist_row = hist_row.push(
-                            text("hist:").size(9).color(p.text_muted)
+                            row![
+                                crate::icons::icon(crate::icons::IconName::History, 10.0, p.text_muted),
+                                text("recent").size(9).color(p.text_muted),
+                            ]
+                            .spacing(4)
+                            .align_y(Alignment::Center),
                         );
                         for recent_cmd in tab.command_history.iter().rev().take(8) {
                             let cmd_owned = format!("{}\r", recent_cmd);
@@ -2114,10 +2069,122 @@ impl App {
                 panel = panel.push(terminal_view);
 
                 if let Some(err) = &tab.relay_error {
-                    panel = panel.push(text(format!("⚠ {}", err)).size(10).color(p.danger));
+                    let alert = row![
+                        crate::icons::icon(crate::icons::IconName::TriangleAlert, 11.0, p.danger),
+                        text(err.clone()).size(10).color(p.danger),
+                    ]
+                    .spacing(5)
+                    .align_y(Alignment::Center);
+                    panel = panel.push(alert);
                 }
 
-                // Autocomplete panel — shown BELOW the terminal while user is typing
+                // ── Command input strip: meaningful prompt indicator + typed buffer ──
+                if !in_alternate_screen {
+                    let host_label = format!("{}@{}", tab.host.username, tab.host.hostname);
+                    let buffer_text = tab.input_buffer.clone();
+                    let typing = !buffer_text.is_empty();
+
+                    // Prompt prefix styled like a real shell
+                    let prompt = row![
+                        crate::icons::icon(crate::icons::IconName::ChevronRight, 11.0, p.accent),
+                        text(format!("{}  ~  $", host_label))
+                            .size(11)
+                            .font(iced::Font {
+                                family: iced::font::Family::Name("Cascadia Mono"),
+                                weight: iced::font::Weight::Semibold,
+                                ..iced::Font::DEFAULT
+                            })
+                            .color(p.text_muted),
+                    ]
+                    .spacing(4)
+                    .align_y(Alignment::Center);
+
+                    let buffer_widget = if typing {
+                        text(buffer_text.clone())
+                            .size(12)
+                            .font(iced::Font {
+                                family: iced::font::Family::Name("Cascadia Mono"),
+                                weight: iced::font::Weight::Normal,
+                                ..iced::Font::DEFAULT
+                            })
+                            .color(p.text_primary)
+                    } else {
+                        text("type to get suggestions  ·  ↑↓ history  ·  Tab accept  ·  Esc close")
+                            .size(10)
+                            .font(iced::Font::DEFAULT)
+                            .color(p.text_muted)
+                    };
+
+                    let send_btn: Element<'static, Message> = if typing {
+                        let buf = buffer_text.clone();
+                        button(
+                            container(crate::icons::icon(crate::icons::IconName::Send, 12.0, p.text_primary))
+                                .center_x(Length::Fill)
+                                .center_y(Length::Fill)
+                                .width(Length::Fill)
+                                .height(Length::Fill),
+                        )
+                        .on_press(Message::TerminalQuickCmd(format!("{}\r", buf)))
+                        .padding(0)
+                        .width(Length::Fixed(26.0))
+                        .height(Length::Fixed(22.0))
+                        .style(move |_: &iced::Theme, s: button::Status| button::Style {
+                            background: Some(iced::Background::Color(match s {
+                                button::Status::Hovered => p.accent_hover,
+                                _ => p.accent,
+                            })),
+                            text_color: p.text_primary,
+                            border: iced::Border {
+                                color: p.border,
+                                width: 1.0,
+                                radius: cr.into(),
+                            },
+                            ..Default::default()
+                        })
+                        .into()
+                    } else {
+                        container(iced::widget::horizontal_space())
+                            .width(Length::Shrink)
+                            .height(Length::Fixed(1.0))
+                            .into()
+                    };
+
+                    let prompt_strip = container(
+                        row![
+                            prompt,
+                            iced::widget::horizontal_space(),
+                            buffer_widget,
+                            iced::widget::horizontal_space(),
+                            send_btn,
+                        ]
+                        .spacing(8)
+                        .align_y(Alignment::Center)
+                        .padding([0, 4]),
+                    )
+                    .width(Length::Fill)
+                    .padding([5, 10])
+                    .style(move |_: &iced::Theme| container::Style {
+                        background: Some(iced::Background::Color(p.bg_primary)),
+                        border: iced::Border {
+                            color: if typing { p.accent } else { p.border },
+                            width: if typing { 1.5 } else { 1.0 },
+                            radius: cr.into(),
+                        },
+                        shadow: if typing {
+                            iced::Shadow {
+                                color: iced::Color { a: 0.18, ..p.accent },
+                                offset: iced::Vector::new(0.0, 0.0),
+                                blur_radius: 8.0,
+                            }
+                        } else {
+                            iced::Shadow::default()
+                        },
+                        ..Default::default()
+                    });
+                    panel = panel.push(prompt_strip);
+                }
+
+                // Autocomplete panel — categorized by history / alias / builtin
                 if !tab.input_buffer.is_empty() && !in_alternate_screen && self.config.suggestions_enabled {
                     let alias_triggers: Vec<String> = self.config.custom_commands.iter().map(|c| c.trigger.clone()).collect();
                     let suggestions = compute_suggestions(tab, &alias_triggers);
@@ -2130,20 +2197,36 @@ impl App {
 
                         let mut sugg_col = Column::new().spacing(0).width(Length::Fill);
 
-                        // Hint header
+                        // Header strip with category legend + keyboard hints
                         sugg_col = sugg_col.push(
                             container(
                                 row![
-                                    text("Suggestions").size(9).color(p.text_muted),
-                                    text("  Click or Ctrl+Space to select").size(9).color(p.text_muted),
-                                    text("  ↑↓ navigate").size(9).color(p.text_muted),
-                                    text("  Tab accept").size(9).color(p.text_muted),
-                                    text("  Esc close").size(9).color(p.text_muted),
+                                    row![
+                                        crate::icons::icon(crate::icons::IconName::History, 10.0, p.accent),
+                                        text("history").size(9).color(p.accent),
+                                    ]
+                                    .spacing(3)
+                                    .align_y(Alignment::Center),
+                                    row![
+                                        crate::icons::icon(crate::icons::IconName::SquareAsterisk, 10.0, p.success),
+                                        text("alias").size(9).color(p.success),
+                                    ]
+                                    .spacing(3)
+                                    .align_y(Alignment::Center),
+                                    row![
+                                        crate::icons::icon(crate::icons::IconName::LayoutGrid, 10.0, p.text_muted),
+                                        text("builtin").size(9).color(p.text_muted),
+                                    ]
+                                    .spacing(3)
+                                    .align_y(Alignment::Center),
+                                    iced::widget::horizontal_space(),
+                                    text("↑↓  ·  Tab/↵ accept  ·  Esc close")
+                                        .size(9).color(p.text_muted),
                                 ]
-                                .spacing(4)
+                                .spacing(10)
                                 .align_y(Alignment::Center),
                             )
-                            .padding([2, 8])
+                            .padding([4, 10])
                             .width(Length::Fill)
                             .style(move |_: &iced::Theme| container::Style {
                                 background: Some(iced::Background::Color(p.bg_tertiary)),
@@ -2155,33 +2238,34 @@ impl App {
                             let is_selected = sugg_idx == Some(idx);
                             let is_alias = alias_set.contains(suggestion.as_str());
                             let from_history = history_set.contains(suggestion.as_str());
-                            let text_color = if is_alias {
-                                p.success
+                            let (text_color, cat_icon, cat_label) = if is_alias {
+                                (p.success, crate::icons::IconName::SquareAsterisk, "alias")
                             } else if from_history {
-                                p.accent
+                                (p.accent, crate::icons::IconName::History, "history")
                             } else {
-                                p.text_secondary
+                                (p.text_secondary, crate::icons::IconName::LayoutGrid, "builtin")
                             };
-                            let bg_color = if is_selected { p.bg_hover } else { p.bg_primary };
+                            let bg_color = if is_selected { p.bg_active } else { p.bg_primary };
                             let cmd_str = suggestion.clone();
-                            let prefix = if is_selected { "▶ " } else if is_alias { "⚡ " } else { "  " };
                             let label = suggestion.clone();
                             sugg_col = sugg_col.push(
                                 button(
                                     row![
-                                        text(prefix).size(11).color(if is_alias { p.success } else { p.accent }),
+                                        crate::icons::icon(crate::icons::IconName::ChevronRight, 10.0, if is_selected { p.accent } else { iced::Color::TRANSPARENT }),
+                                        crate::icons::icon(cat_icon, 11.0, cat_icon_color(is_alias, from_history, p)),
                                         text(label).size(11).color(text_color),
+                                        iced::widget::horizontal_space(),
+                                        text(cat_label).size(8).color(text_color),
                                     ]
+                                    .spacing(6)
                                     .align_y(Alignment::Center),
                                 )
                                 .on_press(Message::TerminalSuggestionAccept(cmd_str))
-                                .padding([3, 8])
+                                .padding([4, 10])
                                 .width(Length::Fill)
                                 .style(move |_: &iced::Theme, s: button::Status| button::Style {
                                     background: Some(iced::Background::Color(match s {
-                                        button::Status::Hovered | button::Status::Pressed => {
-                                            p.bg_hover
-                                        }
+                                        button::Status::Hovered | button::Status::Pressed => p.bg_hover,
                                         _ => bg_color,
                                     })),
                                     text_color,
@@ -2230,7 +2314,7 @@ impl App {
                 // Attach FTP panel — position depends on tab.ftp.layout
                 let pg = lc.panel_gap;
                 let main_content: Element<'_, Message> = if tab.ftp.visible {
-                    let ftp_view = ftp_panel::view(&tab.ftp, ftp_theme, lc);
+                    let ftp_view = ftp_panel::view(&tab.ftp, ftp_theme, lc, self.config.show_borders);
                     match tab.ftp.layout {
                         FtpLayout::Bottom => column![terminal_block, ftp_view]
                             .spacing(pg)
@@ -2522,19 +2606,19 @@ fn ansi_index_to_color(idx: u8) -> iced::Color {
 }
 
 // ─── Quick commands ────────────────────────────────────────────────────────
-const QUICK_CMDS: &[(&str, &str)] = &[
-    ("ls",      "ls -la\r"),
-    ("pwd",     "pwd\r"),
-    ("df",      "df -h\r"),
-    ("free",    "free -h\r"),
-    ("top",     "top\r"),
-    ("ps",      "ps aux --sort=-%cpu | head -20\r"),
-    ("hist",    "history | tail -30\r"),
-    ("who",     "who\r"),
-    ("uptime",  "uptime\r"),
-    ("net",     "ss -tuln\r"),
-    ("env",     "env | sort\r"),
-    ("disk",    "du -sh * 2>/dev/null | sort -rh | head -20\r"),
+const QUICK_CMDS: &[(crate::icons::IconName, &str, &str)] = &[
+    (crate::icons::IconName::Folder,   "ls",     "ls -la\r"),
+    (crate::icons::IconName::Hash,     "pwd",    "pwd\r"),
+    (crate::icons::IconName::Server,   "df",     "df -h\r"),
+    (crate::icons::IconName::SquareTerminal, "free", "free -h\r"),
+    (crate::icons::IconName::LayoutGrid, "top",  "top\r"),
+    (crate::icons::IconName::History,  "ps",     "ps aux --sort=-%cpu | head -20\r"),
+    (crate::icons::IconName::History,  "hist",   "history | tail -30\r"),
+    (crate::icons::IconName::CircleDot, "who",   "who\r"),
+    (crate::icons::IconName::Power,    "uptime", "uptime\r"),
+    (crate::icons::IconName::Wifi,     "net",    "ss -tuln\r"),
+    (crate::icons::IconName::Languages, "env",   "env | sort\r"),
+    (crate::icons::IconName::LayoutGrid, "disk", "du -sh * 2>/dev/null | sort -rh | head -20\r"),
 ];
 
 // ─── Suggestion helpers ────────────────────────────────────────────────────
@@ -2654,6 +2738,10 @@ fn apply_search_highlight(
     (result, count)
 }
 
+fn cat_icon_color(is_alias: bool, from_history: bool, p: theme::Palette) -> iced::Color {
+    if is_alias { p.success } else if from_history { p.accent } else { p.text_muted }
+}
+
 fn terminal_action_button(
     label: &'static str,
     msg: Message,
@@ -2677,6 +2765,49 @@ fn terminal_action_button(
             },
             ..Default::default()
         })
+}
+
+fn terminal_icon_button(
+    icon: crate::icons::IconName,
+    active: bool,
+    msg: Message,
+    p: theme::Palette,
+    icon_size: f32,
+) -> iced::widget::Button<'static, Message> {
+    let icon_color = if active { p.accent } else { p.text_muted };
+    let bg_active = p.bg_active;
+    let bg_idle = iced::Color::TRANSPARENT;
+    let bg_hover = p.bg_hover;
+    button(
+        container(crate::icons::icon(icon, icon_size, icon_color))
+            .center_x(iced::Length::Fill)
+            .center_y(iced::Length::Fill)
+            .width(iced::Length::Fill)
+            .height(iced::Length::Fill),
+    )
+    .on_press(msg)
+    .padding(0)
+    .width(iced::Length::Fixed(28.0))
+    .height(iced::Length::Fixed(22.0))
+    .style(move |_t: &iced::Theme, status: button::Status| {
+        let bg = if active {
+            bg_active
+        } else {
+            match status {
+                button::Status::Hovered => bg_hover,
+                _ => bg_idle,
+            }
+        };
+        button::Style {
+            background: Some(iced::Background::Color(bg)),
+            text_color: icon_color,
+            border: iced::Border {
+                radius: theme::CORNER_RADIUS.into(),
+                ..Default::default()
+            },
+            ..Default::default()
+        }
+    })
 }
 
 fn normalized_screen(screen: &str) -> String {
@@ -2717,16 +2848,28 @@ fn hidden_scrollbar_style(theme: &iced::Theme, status: scrollable::Status) -> sc
 fn fetch_remote_structure(host: &Host) -> Vec<String> {
     let mut structure: Vec<String> = Vec::new();
 
-    let tcp = match TcpStream::connect(format!("{}:{}", host.hostname, host.port)) {
+    // Bound the synchronous side-channel so a dead host never freezes the UI.
+    let addr = match format!("{}:{}", host.hostname, host.port).to_socket_addrs() {
+        Ok(mut iter) => match iter.next() {
+            Some(a) => a,
+            None => return vec![format!("FTP resolve failed: no address for {}", host.hostname)],
+        },
+        Err(err) => return vec![format!("FTP resolve failed: {}", err)],
+    };
+
+    let tcp = match TcpStream::connect_timeout(&addr, Duration::from_secs(4)) {
         Ok(tcp) => tcp,
         Err(err) => return vec![format!("FTP connection failed: {}", err)],
     };
+    let _ = tcp.set_read_timeout(Some(Duration::from_secs(4)));
+    let _ = tcp.set_write_timeout(Some(Duration::from_secs(4)));
 
     let mut sess = match ssh2::Session::new() {
         Ok(s) => s,
         Err(err) => return vec![format!("FTP session error: {}", err)],
     };
     sess.set_tcp_stream(tcp);
+    sess.set_timeout(4000);
     if let Err(err) = sess.handshake() {
         return vec![format!("FTP handshake failed: {}", err)];
     }
